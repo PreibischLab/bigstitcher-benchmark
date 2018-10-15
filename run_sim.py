@@ -9,29 +9,72 @@ from matplotlib import pyplot as plt
 from skimage.io import imsave
 from skimage.io import imread_collection
 
+from calmutils.misc import split_str_digit
+
 # refractive index of medium
 RI_DEFAULT = 1.33 
 # range of ri delta of tissue (in percent of RI_DEFAULT)
-RI_DELTA_RANGE = (.05, .07)
+RI_DELTA_RANGE = (.03, .05)
 
-def split_str_digit(s):
-    """
-    split s into numeric (integer) and non-numeric parts
-    return split as a tuple of ints and strings
-    """
-    res = []
-    for m in re.finditer('(\d*)(\D*)', s):
-        for g in m.groups():
-            if g != '':
-                try:
-                    res.append(int(g))
-                except ValueError:
-                    res.append(g)
-    return tuple(res)
 
+def simple_downsample(a, factors):
+    """
+    very simple subsampling of array
+
+    Parameters
+    ----------
+    a: array
+    the array to downsample
+    factors: int or sequence of ints
+    downsampling factors
+
+    Returns
+    -------
+    a2: array
+    subsampled version of a
+    """
+
+    if np.isscalar(factors):
+        factors = [factors] * len(a.shape)
+
+    a2 = a
+    for i, f in enumerate(factors):
+        a2 = np.take(a2, np.arange(0, a2.shape[i], f), axis=i)
+
+    return a2
+
+
+def random_spots_in_radius(n_spots, n_dim, radius):
+    """
+    get random relative (integer) coordinates within radius
+    """
+
+    if np.isscalar(radius):
+        radius = np.array([radius] * n_dim)
+    else:
+        radius = np.array(radius)
+
+    res_spots = []
+    while len(res_spots) < n_spots:
+        # uniformly distributed on hypersquare
+        candidate = [np.random.randint(-radius[i], radius[i] + 1) for i in range(len(radius))]
+        # reject spots not in hypersphere
+        if (np.sum(np.array(candidate) ** 2 / radius ** 2) <= 1):
+            res_spots.append(candidate)
+
+    return np.array(res_spots)
+
+
+def dn_from_signal(signal, ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE):
+    dn = signal / np.max(signal) * ri_medium * (ri_range[1] - ri_range[0]) + ri_medium * ri_range[0]
+    # no ri change where we have no signal/tissue
+    dn[signal==0] = 0
+    return dn
+    
 
 def sim_lightsheet(base_path, out_dir, phantom_dir='sim-phantom', in_pattern='sim(\d+).tif', right_illum=False,
-                   physical_dims=(400,400,50), ls_pos=200, lam=500, out_pattern='sim-biobeam{}.tif', planes_to_simulate=None):
+                   physical_dims=(400,400,50), ls_pos=200, lam=500, out_pattern='sim-biobeam{}.tif', planes_to_simulate=None,
+                   ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE):
     
     in_path = os.path.join(base_path, phantom_dir)
     files = os.listdir(in_path)
@@ -50,15 +93,13 @@ def sim_lightsheet(base_path, out_dir, phantom_dir='sim-phantom', in_pattern='si
     
     # setup signal and refractive index
     signal = img
-    dn = signal / np.max(signal) * RI_DEFAULT * (RI_DELTA_RANGE[1] - RI_DELTA_RANGE[0]) + RI_DEFAULT * RI_DELTA_RANGE[1]
-    # no ri change where we have no signal/tissue
-    dn[signal==0] = 0
-
+    dn = dn_from_signal(signal, ri_medium, ri_range)
+    
     #create a microscope simulator
     m = biobeam.SimLSM_Cylindrical(dn = dn, signal = signal, zfoc_illum=(-1 if right_illum else 1) * physical_dims[0]/2 - ls_pos,
                        NA_illum= .1, NA_detect=.45,
-                       n_volumes=2, lam_illum =lam/1000, lam_detect =lam/1000,
-                       size = physical_dims, n0 = RI_DEFAULT)
+                       n_volumes=4, lam_illum =lam/1000, lam_detect =lam/1000,
+                       size = physical_dims, n0 = ri_medium)
     
     
     # make outdir if necessary
