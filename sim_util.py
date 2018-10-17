@@ -1,4 +1,16 @@
+import os
+import re
+import json
 import numpy as np
+from skimage.io import imread_collection
+from skimage.io import imsave
+import biobeam
+from run_sim import dn_from_signal
+from run_sim import simple_downsample
+from run_sim import RI_DEFAULT, RI_DELTA_RANGE
+
+
+CONV_PADDING = 16
 
 
 def random_points_in_volume_min_distance(low, high, min_dist, n_points):
@@ -44,18 +56,21 @@ def random_points_in_volume_min_distance(low, high, min_dist, n_points):
 
     return np.array(points)
 
-from run_sim import dn_from_signal
-from calmutils.misc import split_str_digit
-from run_sim import simple_downsample
-from run_sim import RI_DEFAULT, RI_DELTA_RANGE
-from skimage.io import imread_collection
-import biobeam
-import os
-import re
-from skimage.io import imsave
 
-
-CONV_PADDING = 16
+def split_str_digit(s):
+    """
+    split s into numeric (integer) and non-numeric parts
+    return split as a tuple of ints and strings
+    """
+    res = []
+    for m in re.finditer('(\d*)(\D*)', s):
+        for g in m.groups():
+            if g != '':
+                try:
+                    res.append(int(g))
+                except ValueError:
+                    res.append(g)
+    return tuple(res)
 
 
 def save_as_sequence(img, base_path, file_pattern='image{plane}.tif', pad_idx=True, axis=0):
@@ -87,12 +102,12 @@ def load_tiff_sequence(raw_data_path, pattern=None):
 def sim_lightsheet_img(img, desc, dn, right_illum,
                    na_illum, na_detect,
                    physical_dims=(400,400,50), ls_pos=200, lam=500,
-                   ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE):
+                   ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE, padding=CONV_PADDING):
     
     # zero-pad image for conv
-    img = np.pad(img, ((CONV_PADDING,CONV_PADDING),(0,0),(0,0)), "constant")
-    desc = np.pad(desc, ((CONV_PADDING,CONV_PADDING),(0,0),(0,0)), "constant")
-    dn = np.pad(dn, ((CONV_PADDING,CONV_PADDING),(0,0),(0,0)), "constant")
+    img = np.pad(img, ((padding,padding),(0,0),(0,0)), "constant")
+    desc = np.pad(desc, ((padding,padding),(0,0),(0,0)), "constant")
+    dn = np.pad(dn, ((padding,padding),(0,0),(0,0)), "constant")
     
     # simulate right illumination with flip of x-axis
     if right_illum:
@@ -113,18 +128,18 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
                        size = physical_dims, n0 = ri_medium)
     
     
-    out = np.zeros((img.shape[0] - CONV_PADDING*2,) + img.shape[1:], dtype=img.dtype)
-    out_desc = np.zeros((img.shape[0] - CONV_PADDING*2,) + img.shape[1:], dtype=img.dtype)
+    out = np.zeros((img.shape[0] - padding*2,) + img.shape[1:], dtype=img.dtype)
+    out_desc = np.zeros((img.shape[0] - padding*2,) + img.shape[1:], dtype=img.dtype)
     for i in range(out.shape[0]):
 
-        cz = i - (img.shape[0] - CONV_PADDING*2) // 2
+        cz = i - (img.shape[0] - padding*2) // 2
         cz = cz * m._bpm_detect.units[-1]
 
-        image = m.simulate_image_z(cz=cz, zslice=CONV_PADDING, psf_grid_dim=(16,16), conv_sub_blocks=(4,4))
-        out[i] = image[CONV_PADDING] if not right_illum else np.flip(image[CONV_PADDING], 1)
+        image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=(4,4))
+        out[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
         
-        image = m_desc.simulate_image_z(cz=cz, zslice=CONV_PADDING, psf_grid_dim=(16,16), conv_sub_blocks=(4,4))
-        out_desc[i] = image[CONV_PADDING] if not right_illum else np.flip(image[CONV_PADDING], 1)
+        image = m_desc.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=(4,4))
+        out_desc[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
 
     return out, out_desc
     
@@ -156,6 +171,8 @@ def sim_from_definition(def_path):
     x_locs = params['x_locs']
     y_locs = params['y_locs']
     z_locs = params['z_locs']
+    fields = params['fields']
+    padding = params['padding']
 
     img = load_tiff_sequence(raw_data_path)
     
@@ -186,7 +203,7 @@ def sim_from_definition(def_path):
 
             # simulate signal and descriptors
             out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, na_illum, na_detect, physical_dims_, ls_pos_,
-                               lam, ri_medium, ri_delta_range)
+                               lam, ri_medium, ri_delta_range, padding)
 
             yidx, zidx = np.meshgrid(range(len(y_locs)), range(len(z_locs)))    
             for yi, zi in zip(yidx.flat, zidx.flat):
