@@ -14,7 +14,7 @@ def main():
     args = parser.parse_args()
 
     # set and check which gpu is used
-    gputools.init_device(id_platform=0, id_device=args.gpu_idx)
+    gputools.init_device(id_platform=0, id_device=int(args.gpu_idx))
     gputools.get_device()
 
     # run simulation
