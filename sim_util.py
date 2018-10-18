@@ -7,12 +7,12 @@ from skimage.io import imread_collection
 from skimage.io import imsave
 import biobeam
 from scipy import ndimage as ndi
-from run_sim import dn_from_signal
-from run_sim import simple_downsample
-from run_sim import RI_DEFAULT, RI_DELTA_RANGE
 
 
+# defaults
 CONV_PADDING = 16
+RI_DEFAULT = 1.33
+RI_DELTA_RANGE = (.03, .05)
 
 
 def random_points_in_volume_min_distance(low, high, min_dist, n_points):
@@ -137,10 +137,10 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
         cz = i - (img.shape[0] - padding*2) // 2
         cz = cz * m._bpm_detect.units[-1]
 
-        image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=(4,4))
+        image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=(8,8))
         out[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
         
-        image = m_desc.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=(4,4))
+        image = m_desc.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=(8,8))
         out_desc[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
 
     return out, out_desc
@@ -231,3 +231,57 @@ def sim_from_definition(def_path):
                 save_as_sequence(out_signal[idxs], out_dir, file_pattern='bbeam_sim_c1_z{plane}.tif')
                 save_as_sequence(out_desc[idxs], out_dir, file_pattern='bbeam_sim_c2_z{plane}.tif')
 
+
+def simple_downsample(a, factors):
+    """
+    very simple subsampling of array
+
+    Parameters
+    ----------
+    a: array
+    the array to downsample
+    factors: int or sequence of ints
+    downsampling factors
+
+    Returns
+    -------
+    a2: array
+    subsampled version of a
+    """
+
+    if np.isscalar(factors):
+        factors = [factors] * len(a.shape)
+
+    a2 = a
+    for i, f in enumerate(factors):
+        a2 = np.take(a2, np.arange(0, a2.shape[i], f), axis=i)
+
+    return a2
+
+
+def random_spots_in_radius(n_spots, n_dim, radius):
+    """
+    get random relative (integer) coordinates within radius
+    """
+
+    if np.isscalar(radius):
+        radius = np.array([radius] * n_dim)
+    else:
+        radius = np.array(radius)
+
+    res_spots = []
+    while len(res_spots) < n_spots:
+        # uniformly distributed on hypersquare
+        candidate = [np.random.randint(-radius[i], radius[i] + 1) for i in range(len(radius))]
+        # reject spots not in hypersphere
+        if (np.sum(np.array(candidate) ** 2 / radius ** 2) <= 1):
+            res_spots.append(candidate)
+
+    return np.array(res_spots)
+
+
+def dn_from_signal(signal, ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE):
+    dn = signal / np.max(signal) * ri_medium * (ri_range[1] - ri_range[0]) + ri_medium * ri_range[0]
+    # no ri change where we have no signal/tissue
+    dn[signal==0] = 0
+    return dn
