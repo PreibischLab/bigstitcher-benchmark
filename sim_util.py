@@ -1,10 +1,12 @@
 import os
 import re
 import json
+from itertools import product
 import numpy as np
 from skimage.io import imread_collection
 from skimage.io import imsave
 import biobeam
+from scipy import ndimage as ndi
 from run_sim import dn_from_signal
 from run_sim import simple_downsample
 from run_sim import RI_DEFAULT, RI_DELTA_RANGE
@@ -193,8 +195,9 @@ def sim_from_definition(def_path):
             desc_img[tuple(point)] = 1
     
     # TODO: blur slightly?
+    desc_img = ndi.gaussian_filter(desc_img, 1.0)
 
-    for lam, right_illum in zip(lambdas, [False] if not two_sided_illum else [True, False]):
+    for lam, right_illum in product(lambdas, ([False] if not two_sided_illum else [True, False])):
 
         for xi in range(len(x_locs)):
 
@@ -215,7 +218,7 @@ def sim_from_definition(def_path):
                 max_ = np.array(loc) + np.array(off) + np.floor(np.array(fov_size) / 2)
 
                 # out dir
-                out_dir = save_fstring.format(x=xi, y=yi, z=zi, lam=lam, illum=1 if not right_illum else 2)
+                out_dir = save_fstring.format(x=xi, y=yi, z=zi, lam=lam, illum=(1 if not right_illum else 2))
 
                 # cut signal and descriptors
                 # NB: downsampling

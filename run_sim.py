@@ -9,7 +9,7 @@ from matplotlib import pyplot as plt
 from skimage.io import imsave
 from skimage.io import imread_collection
 
-from calmutils.misc import split_str_digit
+#from calmutils.misc import split_str_digit
 
 # refractive index of medium
 RI_DEFAULT = 1.33 
