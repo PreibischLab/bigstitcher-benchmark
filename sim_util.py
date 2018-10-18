@@ -13,6 +13,7 @@ from scipy import ndimage as ndi
 CONV_PADDING = 16
 RI_DEFAULT = 1.33
 RI_DELTA_RANGE = (.03, .05)
+DEFAULT_CONV_SUBBLOCKS = (4, 4)
 
 
 def random_points_in_volume_min_distance(low, high, min_dist, n_points):
@@ -104,7 +105,7 @@ def load_tiff_sequence(raw_data_path, pattern=None):
 def sim_lightsheet_img(img, desc, dn, right_illum,
                    na_illum, na_detect,
                    physical_dims=(400,400,50), ls_pos=200, lam=500,
-                   ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE, padding=CONV_PADDING):
+                   ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE, padding=CONV_PADDING, conv_subblocks=DEFAULT_CONV_SUBBLOCKS):
     
     # zero-pad image for conv
     img = np.pad(img, ((padding,padding),(0,0),(0,0)), "constant")
@@ -137,10 +138,10 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
         cz = i - (img.shape[0] - padding*2) // 2
         cz = cz * m._bpm_detect.units[-1]
 
-        image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=(8,8))
+        image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=tuple(conv_subblocks))
         out[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
         
-        image = m_desc.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=(8,8))
+        image = m_desc.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=tuple(conv_subblocks))
         out_desc[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
 
     return out, out_desc
@@ -175,6 +176,7 @@ def sim_from_definition(def_path):
     z_locs = params['z_locs']
     fields = params['fields']
     padding = params['padding']
+    conv_subblocks = params['conv_subblocks']
 
     img = load_tiff_sequence(raw_data_path)
     
@@ -206,7 +208,12 @@ def sim_from_definition(def_path):
 
             # simulate signal and descriptors
             out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, na_illum, na_detect, physical_dims_, ls_pos_,
-                               lam, ri_medium, ri_delta_range, padding)
+                               lam, ri_medium, ri_delta_range, padding, conv_subblocks)
+
+            # save the whole simulated volume
+            out_dir_all = save_fstring.format(x=xi, y='all', z='all', lam=lam, illum=(1 if not right_illum else 2))
+            save_as_sequence(out_signal, out_dir_all, file_pattern='bbeam_sim_c1_z{plane}.tif')
+            save_as_sequence(out_desc, out_dir_all, file_pattern='bbeam_sim_c2_z{plane}.tif')
 
             yidx, zidx = np.meshgrid(range(len(y_locs)), range(len(z_locs)))    
             for yi, zi in zip(yidx.flat, zidx.flat):
