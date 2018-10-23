@@ -105,7 +105,8 @@ def load_tiff_sequence(raw_data_path, pattern=None):
 def sim_lightsheet_img(img, desc, dn, right_illum,
                    na_illum, na_detect,
                    physical_dims=(400,400,50), ls_pos=200, lam=500,
-                   ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE, padding=CONV_PADDING, conv_subblocks=DEFAULT_CONV_SUBBLOCKS):
+                   ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE, padding=CONV_PADDING, conv_subblocks=DEFAULT_CONV_SUBBLOCKS,
+                   bprop_nvolumes=4):
     
     # zero-pad image for conv
     img = np.pad(img, ((padding,padding),(0,0),(0,0)), "constant")
@@ -118,18 +119,21 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
         desc = np.flip(desc, 2)
         dn = np.flip(dn, 2)
     
+    if right_illum:
+        ls_pos = physical_dims[0] - ls_pos
+    
     # create a microscope simulator for signal
     m = biobeam.SimLSM_Cylindrical(dn = dn, signal = img,
-                       zfoc_illum=(-1 if right_illum else 1) * (ls_pos - physical_dims[0]/2),
+                       zfoc_illum=ls_pos,
                        NA_illum=na_illum, NA_detect=na_detect,
-                       n_volumes=4, lam_illum =lam/1000, lam_detect =lam/1000,
+                       n_volumes=bprop_nvolumes, lam_illum =lam/1000, lam_detect =lam/1000,
                        size = physical_dims, n0 = ri_medium)
     
     # create a microscope simulator for descriptors
     m_desc = biobeam.SimLSM_Cylindrical(dn = dn, signal = desc,
-                       zfoc_illum=(-1 if right_illum else 1) * (ls_pos - physical_dims[0]/2),
+                       zfoc_illum=ls_pos,
                        NA_illum=na_illum, NA_detect=na_detect,
-                       n_volumes=4, lam_illum =lam/1000, lam_detect =lam/1000,
+                       n_volumes=bprop_nvolumes, lam_illum =lam/1000, lam_detect =lam/1000,
                        size = physical_dims, n0 = ri_medium)
     
     
@@ -179,6 +183,7 @@ def sim_from_definition(def_path):
     fields = params['fields']
     padding = params['padding']
     conv_subblocks = params['conv_subblocks']
+    bprop_nvolumes = params['bprop_nvolumes']
 
     img = load_tiff_sequence(raw_data_path)
     
@@ -210,7 +215,7 @@ def sim_from_definition(def_path):
 
             # simulate signal and descriptors
             out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, na_illum, na_detect, physical_dims_, ls_pos_,
-                               lam, ri_medium, ri_delta_range, padding, conv_subblocks)
+                               lam, ri_medium, ri_delta_range, padding, conv_subblocks, bprop_nvolumes)
 
             # save the whole simulated volume
             out_dir_all = save_fstring.format(x=xi, y='all', z='all', lam=lam, illum=(1 if not right_illum else 2))
