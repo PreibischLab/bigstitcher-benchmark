@@ -119,13 +119,15 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
         dn = np.flip(dn, 2)
     
     # create a microscope simulator for signal
-    m = biobeam.SimLSM_Cylindrical(dn = dn, signal = img, zfoc_illum=(-1 if right_illum else 1) * physical_dims[0]/2 - ls_pos,
+    m = biobeam.SimLSM_Cylindrical(dn = dn, signal = img,
+                       zfoc_illum=(-1 if right_illum else 1) * (ls_pos - physical_dims[0]/2),
                        NA_illum=na_illum, NA_detect=na_detect,
                        n_volumes=4, lam_illum =lam/1000, lam_detect =lam/1000,
                        size = physical_dims, n0 = ri_medium)
     
     # create a microscope simulator for descriptors
-    m_desc = biobeam.SimLSM_Cylindrical(dn = dn, signal = desc, zfoc_illum=(-1 if right_illum else 1) * physical_dims[0]/2 - ls_pos,
+    m_desc = biobeam.SimLSM_Cylindrical(dn = dn, signal = desc,
+                       zfoc_illum=(-1 if right_illum else 1) * (ls_pos - physical_dims[0]/2),
                        NA_illum=na_illum, NA_detect=na_detect,
                        n_volumes=4, lam_illum =lam/1000, lam_detect =lam/1000,
                        size = physical_dims, n0 = ri_medium)
@@ -204,7 +206,7 @@ def sim_from_definition(def_path):
         for xi in range(len(x_locs)):
 
             physical_dims_ = tuple(list(np.array(phys_dims)//downsampling))
-            ls_pos_ = np.interp(x_locs[xi]//downsampling, (0, raw_data_dims[2]//downsampling), (0, phys_dims[2]//downsampling))
+            ls_pos_ = np.interp(x_locs[xi]//downsampling, (0, raw_data_dims[2]//downsampling), (0, phys_dims[0]//downsampling))
 
             # simulate signal and descriptors
             out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, na_illum, na_detect, physical_dims_, ls_pos_,
