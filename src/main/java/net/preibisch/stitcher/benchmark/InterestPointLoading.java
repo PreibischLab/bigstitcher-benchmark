@@ -1,13 +1,15 @@
 package net.preibisch.stitcher.benchmark;
 
 
+import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 import com.google.gson.Gson;
@@ -15,24 +17,22 @@ import com.google.gson.GsonBuilder;
 
 import mpicbg.models.AffineModel3D;
 import mpicbg.models.IllDefinedDataPointsException;
+import mpicbg.models.InverseCoordinateTransform;
+import mpicbg.models.Model;
 import mpicbg.models.NoninvertibleModelException;
 import mpicbg.models.NotEnoughDataPointsException;
-import mpicbg.models.RigidModel3D;
-import mpicbg.models.TranslationModel3D;
-import mpicbg.spim.data.SpimData;
 import mpicbg.spim.data.SpimDataException;
 import mpicbg.spim.data.sequence.Channel;
-import mpicbg.spim.data.sequence.ViewDescription;
 import mpicbg.spim.data.sequence.ViewId;
 import mpicbg.spim.mpicbg.PointMatchGeneric;
+import net.imglib2.util.Pair;
 import net.imglib2.util.Util;
+import net.imglib2.util.ValuePair;
 import net.preibisch.mvrecon.fiji.spimdata.SpimData2;
 import net.preibisch.mvrecon.fiji.spimdata.XmlIoSpimData2;
 import net.preibisch.mvrecon.fiji.spimdata.interestpoints.InterestPoint;
-import net.preibisch.mvrecon.fiji.spimdata.interestpoints.InterestPointList;
 import net.preibisch.mvrecon.process.interestpointregistration.TransformationTools;
 import net.preibisch.mvrecon.process.interestpointregistration.pairwise.PairwiseResult;
-import net.preibisch.mvrecon.process.interestpointregistration.pairwise.methods.fastrgldm.FRGLDMMatcher;
 import net.preibisch.mvrecon.process.interestpointregistration.pairwise.methods.fastrgldm.FRGLDMPairwise;
 import net.preibisch.mvrecon.process.interestpointregistration.pairwise.methods.fastrgldm.FRGLDMParameters;
 import net.preibisch.mvrecon.process.interestpointregistration.pairwise.methods.icp.IterativeClosestPointPairwise;
@@ -43,6 +43,12 @@ import net.preibisch.mvrecon.process.interestpointregistration.pairwise.methods.
 
 public class InterestPointLoading
 {
+
+	private static class OutPointMatch
+	{
+		public double[] gt;
+		public double[] data;
+	}
 
 	private static class FieldParameters
 	{
@@ -147,88 +153,185 @@ public class InterestPointLoading
 		}
 		return ipsFirst;
 	}
+	
+	public static <I extends InterestPoint> List< Pair< I, I > > matchGTtoDataRGLDM(
+			final List<I> gtPoints,
+			final List<I> dataPoints,
+			final RANSACParameters rp,
+			final RGLDMParameters mp,
+			final IterativeClosestPointParameters ip
+			)
+	{
+		RGLDMPairwise< I > matcherPairwise = new RGLDMPairwise<>( rp, mp );
+		PairwiseResult< I > match = matcherPairwise.match( gtPoints, dataPoints );
+		
+		Model<?> model =  mp.getModel().copy();
+		try
+		{
+			model.fit( match.getInliers() );
+		}
+		catch ( NotEnoughDataPointsException | IllDefinedDataPointsException e )
+		{
+			return null;
+		}
+		
+		ArrayList< InterestPoint > ipDataTransformed = new ArrayList<>();
+
+		// transform one set by inverse of first round
+		for (final I ipnt : dataPoints)
+		{
+			InterestPoint ipntTrans = null;
+			try
+			{
+				ipntTrans = new InterestPoint( ipnt.getId(), ( (InverseCoordinateTransform) model ).applyInverse( ipnt.getW() ) );
+			}
+			catch ( NoninvertibleModelException e )
+			{
+				return null;
+			}
+			ipDataTransformed.add( ipntTrans );
+		}
+		
+		IterativeClosestPointPairwise< InterestPoint > icp = new IterativeClosestPointPairwise< InterestPoint >( ip );
+
+		PairwiseResult< InterestPoint > match2 = icp.match( (List< InterestPoint >) gtPoints, ipDataTransformed );
+		List< Pair< I, I > > res = new ArrayList<>();
+		for (PointMatchGeneric< InterestPoint > pm : match2.getInliers())
+		{
+			InterestPoint ipntTrans = null;
+			try
+			{
+				ipntTrans = new InterestPoint( pm.getPoint2().getId(), ( (InverseCoordinateTransform) model ).applyInverse( pm.getPoint2().getW() ) );
+			}
+			catch ( NoninvertibleModelException e )
+			{
+				return null;
+			}
+			res.add( new ValuePair< I, I >( (I) pm.getPoint1(), (I)ipntTrans ) );
+		}
+		return res;
+	}
+	
+	
+	public static <I extends InterestPoint> List< Pair< I, I > > matchGTtoDataFRGLDM(
+			final List<I> gtPoints,
+			final List<I> dataPoints,
+			final RANSACParameters rp,
+			final FRGLDMParameters mp,
+			final IterativeClosestPointParameters ip
+			)
+	{
+		FRGLDMPairwise< I > matcherPairwise = new FRGLDMPairwise<>( rp, mp );
+		PairwiseResult< I > match = matcherPairwise.match( gtPoints, dataPoints );
+		
+		Model<?> model =  mp.getModel().copy();
+		try
+		{
+			model.fit( match.getInliers() );
+		}
+		catch ( NotEnoughDataPointsException | IllDefinedDataPointsException e )
+		{
+			return null;
+		}
+		
+		ArrayList< InterestPoint > ipDataTransformed = new ArrayList<>();
+
+		// transform one set by inverse of first round
+		for (final I ipnt : dataPoints)
+		{
+			InterestPoint ipntTrans = null;
+			try
+			{
+				ipntTrans = new InterestPoint( ipnt.getId(), ( (InverseCoordinateTransform) model ).applyInverse( ipnt.getW() ) );
+			}
+			catch ( NoninvertibleModelException e )
+			{
+				return null;
+			}
+			ipDataTransformed.add( ipntTrans );
+		}
+		
+		IterativeClosestPointPairwise< InterestPoint > icp = new IterativeClosestPointPairwise< InterestPoint >( ip );
+
+		PairwiseResult< InterestPoint > match2 = icp.match( (List< InterestPoint >) gtPoints, ipDataTransformed );
+		List< Pair< I, I > > res = new ArrayList<>();
+		for (PointMatchGeneric< InterestPoint > pm : match2.getInliers())
+		{
+			InterestPoint ipntTrans = null;
+			try
+			{
+				ipntTrans = new InterestPoint( pm.getPoint2().getId(), ( (InverseCoordinateTransform) model ).applyInverse( pm.getPoint2().getW() ) );
+			}
+			catch ( NoninvertibleModelException e )
+			{
+				return null;
+			}
+			res.add( new ValuePair< I, I >( (I) pm.getPoint1(), (I)ipntTrans ) );
+		}
+		return res;
+	}
 
 	public static void main(String[] args)
 	{
 
+		String datasetFilePath =  "/Volumes/davidh-ssd/mv-sim/sim5/intensity_adjusted/dataset.xml";
+		String gtFilePath =  "/Volumes/davidh-ssd/mv-sim/sim5/sim5.json";
+		String outFilePath =  "/Volumes/davidh-ssd/mv-sim/sim5/match_results.json";
+		
+		// coordinates detected in SpimData
 		SpimData2 data = null;
 		try
 		{
-			data = new XmlIoSpimData2( "" ).load( "/Volumes/davidh-ssd/mv-sim/sim3/intensity_adjusted/dataset.xml" );
+			data = new XmlIoSpimData2( "" ).load( datasetFilePath );
 		}
 		catch ( SpimDataException e ) { e.printStackTrace(); }
 		final List< InterestPoint > ipsAll = getInterestPointsFromSpimData( data, 2, "beads" );
 
 		// coordinates from simulation parameters
-		final Map< String, List< List< Integer > > > gtCoords = getGTCoordinatesFromJSON( "/Volumes/davidh-ssd/mv-sim/sim3/sim3.json" );
-		List<List<Integer>> locsFirst = new ArrayList<>();
-		locsFirst.addAll( gtCoords.get( "0,3,0" ) );
-		ArrayList< InterestPoint > ipsFirst = gtCoordinatesToIPs( locsFirst, true );
-		
-		// match with ransac
-		final RANSACParameters ransacParameters = new RANSACParameters();
-		// TODO: RANSAC should have 10/10 inliers, but does not
-		// probably a numerical issue, since there is NO error in the GT
-		ransacParameters.setMinInlierFactor( 2f );
-		final RGLDMParameters dp = new RGLDMParameters( new AffineModel3D(), Float.MAX_VALUE, 2.0f, 3, 2 );
-		RGLDMPairwise< InterestPoint > matcherPairwise = new RGLDMPairwise<>( ransacParameters, dp );
-		//final FRGLDMParameters matcherParameters = new FRGLDMParameters( new AffineModel3D(), 2f, 2 );
-		//FRGLDMPairwise< InterestPoint > matcherPairwise = new FRGLDMPairwise<>( ransacParameters, matcherParameters );
-		PairwiseResult< InterestPoint > match = matcherPairwise.match( ipsFirst, ipsAll );
-		System.out.println( match.getFullDesc() );
-		for (PointMatchGeneric< InterestPoint > pm : match.getInliers())
-			System.out.println( Util.printCoordinates( pm.getPoint1() ) + " " + Util.printCoordinates( pm.getPoint2() ));
+		final Map< String, List< List< Integer > > > gtCoords = getGTCoordinatesFromJSON( gtFilePath );
 
-		AffineModel3D model = new AffineModel3D();
-		try
+		// parameters for matchers
+		final RANSACParameters rp = new RANSACParameters();
+		rp.setMinInlierFactor( 1.5f );
+		final RGLDMParameters mp = new RGLDMParameters( new AffineModel3D(), Float.MAX_VALUE, 1.5f, 3, 2 );
+		final IterativeClosestPointParameters ip = new IterativeClosestPointParameters( new AffineModel3D() );
+		
+		Map<String, List<OutPointMatch>> out = new HashMap<>();
+		
+		for (String field : gtCoords.keySet())
 		{
-			model.fit( match.getInliers() );
-			System.out.println( model );
+			System.out.println( " === " + field + " === " );
+			final List<List<Integer>> locsGTfield = new ArrayList<>();
+			locsGTfield.addAll( gtCoords.get( field ) );
+			final ArrayList< InterestPoint > ipsFirst = gtCoordinatesToIPs( locsGTfield, true );
+			List< Pair< InterestPoint, InterestPoint > > res = matchGTtoDataRGLDM( ipsFirst, ipsAll, rp, mp, ip );
+			if (res == null)
+				System.out.println( "NO match found." );
+			else
+			{
+				System.out.println( "Found " + res.size() + " matching points.");
+				List< OutPointMatch > resOut = res.stream().map( pm -> {
+					OutPointMatch opm = new OutPointMatch();
+					opm.gt = pm.getA().getW();
+					opm.data = pm.getB().getW();
+					return opm;
+				} ).collect( Collectors.toList() );
+				out.put( field, resOut );
+			}	
+			
 		}
-		catch ( NotEnoughDataPointsException | IllDefinedDataPointsException e )
+		
+		final Gson gson = new GsonBuilder().setPrettyPrinting().create();
+		
+		try ( PrintWriter pr = new PrintWriter( new File( outFilePath ) ))
+		{
+			pr.print( gson.toJson( out ) );
+		}
+		catch ( FileNotFoundException e )
 		{
 			e.printStackTrace();
 		}
-
-		// match without ransac, just FRGLD
-		/*
-		FRGLDMMatcher< InterestPoint > matcher2 = new FRGLDMMatcher<>();
-		ArrayList< PointMatchGeneric< InterestPoint > > match2 = matcher2.extractCorrespondenceCandidates( ipsFirst, ipsAll, 0, 5 );
-		for (PointMatchGeneric< InterestPoint > pm : match2)
-			System.out.println( Util.printCoordinates( pm.getPoint1() ) + " " + Util.printCoordinates( pm.getPoint2() ));
-		*/
-		
-		
-		// refine the alignment via ICP
-		IterativeClosestPointParameters icpParams = new IterativeClosestPointParameters( new AffineModel3D() );
-		IterativeClosestPointPairwise< InterestPoint > icp = new IterativeClosestPointPairwise< InterestPoint >( icpParams );
-		ArrayList< InterestPoint > ipAllTransformed = new ArrayList<>();
-
-		// transform one set by inverse of first round
-		for (final InterestPoint ip : ipsAll)
-		{
-			InterestPoint ipTrans = null;
-			try
-			{
-				ipTrans = new InterestPoint( ip.getId(), model.applyInverse( ip.getW() ) );
-			}
-			catch ( NoninvertibleModelException e )
-			{
-				e.printStackTrace();
-			}
-			//System.out.println( Util.printCoordinates( ipTrans ) + ", " + Util.printCoordinates( ip ) );
-			ipAllTransformed.add( ipTrans );
-		}
-
-		PairwiseResult< InterestPoint > match3 = icp.match( ipsFirst, ipAllTransformed );
-		for (PointMatchGeneric< InterestPoint > pm : match3.getInliers())
-			System.out.println( Util.printCoordinates( pm.getPoint1() ) + " " + Util.printCoordinates( pm.getPoint2() ));
-		
-		
-		
-		
-		
-		//System.out.println( data.getViewInterestPoints().getViewInterestPoints());
+		System.out.println( gson.toJson( out ) );
 	}
 
 
