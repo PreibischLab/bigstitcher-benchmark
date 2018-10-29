@@ -178,7 +178,7 @@ public class SimulateTissue
 		{
 			ExecutorService service = Executors.newFixedThreadPool( Runtime.getRuntime().availableProcessors() );
 			ArrayList<Callable< Void >> calls = new ArrayList<>();
-			for (long z=0; z<(params.max[2] - params.min[2]); z++)
+			for (long z=0; z<=(params.max[2] - params.min[2]); z++)
 			{
 				final long theZ = z;
 				calls.add( new Callable< Void >()
@@ -210,7 +210,7 @@ public class SimulateTissue
 						ImagePlus imp = ImageJFunctions.wrap(slice, "plane" + theZ);
 						IJ.saveAsTiff( imp, Paths.get( args[0], "sim-phantom", "sim"+theZ+".tif" ).toString() );
 
-						System.out.println( "saved plane " + (theZ+1) + " (of " + (params.max[2] - params.min[2]) + " planes)." );
+						System.out.println( "saved plane " + (theZ+1) + " (of " + (params.max[2] - params.min[2] + 1) + " planes)." );
 						return null;
 					}
 				} );
