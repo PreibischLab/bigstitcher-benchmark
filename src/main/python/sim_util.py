@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import warnings
 from itertools import product
 import numpy as np
 from skimage.io import imread_collection
@@ -81,14 +82,17 @@ def save_as_sequence(img, base_path, file_pattern='image{plane}.tif', pad_idx=Tr
     if not os.path.exists(base_path):
         os.makedirs(base_path)
     
-    for plane in range(img.shape[axis]):
-        idx = tuple([slice(img.shape[ax]) if ax!=axis else plane for ax in range(len(img.shape))])
-        img_i = img[idx].astype(np.float32)
-        plane_padded = plane
-        if pad_idx:
-            pref = '0' * (len(str(img.shape[axis]-1)) - len(str(plane)))
-            plane_padded = pref + str(plane_padded)
-        imsave(os.path.join(base_path, file_pattern.format(plane=plane_padded)), img_i)
+    with warnings.catch_warnings():
+        # ignore annoying "low constrast image" warnings printed by skimage
+        warnings.filterwarnings("ignore", message=".*?low contrast image.*?")
+        for plane in range(img.shape[axis]):
+            idx = tuple([slice(img.shape[ax]) if ax!=axis else plane for ax in range(len(img.shape))])
+            img_i = img[idx].astype(np.float32)
+            plane_padded = plane
+            if pad_idx:
+                pref = '0' * (len(str(img.shape[axis]-1)) - len(str(plane)))
+                plane_padded = pref + str(plane_padded)
+            imsave(os.path.join(base_path, file_pattern.format(plane=plane_padded)), img_i)
         
         
 def load_tiff_sequence(raw_data_path, pattern=None):
