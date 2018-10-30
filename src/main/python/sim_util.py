@@ -3,6 +3,7 @@ import re
 import json
 import warnings
 from itertools import product
+from argparse import Namespace
 import numpy as np
 from skimage.io import imread_collection
 from skimage.io import imsave
@@ -110,7 +111,7 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
                    na_illum, na_detect,
                    physical_dims=(400,400,50), ls_pos=200, lam=500,
                    ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE, padding=CONV_PADDING, conv_subblocks=DEFAULT_CONV_SUBBLOCKS,
-                   bprop_nvolumes=4):
+                   bprop_nvolumes=4, z_plane_subset=None):
     
     # zero-pad image for conv
     img = np.pad(img, ((padding,padding),(0,0),(0,0)), "constant")
@@ -141,11 +142,22 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
                        size = physical_dims, n0 = ri_medium)
     
     
-    out = np.zeros((img.shape[0] - padding*2,) + img.shape[1:], dtype=img.dtype)
-    out_desc = np.zeros((img.shape[0] - padding*2,) + img.shape[1:], dtype=img.dtype)
-    for i in range(out.shape[0]):
+    # make sure z-plane subset is iterable
+    if z_plane_subset is not None and np.isscalar(z_plane_subset):
+        z_plane_subset = [z_plane_subset]    
+    
+    print('simulating images at z-position-subset: {}'.format(z_plane_subset))
+    
+    # get positions and number of planes to simulate
+    z_shape = (img.shape[0] - padding*2,) if z_plane_subset is None else (len(z_plane_subset), )
+    z_positions = range(out.shape[0]) if z_plane_subset is None else z_plane_subset
+    
+    out = np.zeros(z_shape + img.shape[1:], dtype=img.dtype)
+    out_desc = np.zeros(z_shape + img.shape[1:], dtype=img.dtype)
+    
+    for i, pos in enumerate(z_positions):
 
-        cz = i - (img.shape[0] - padding*2) // 2
+        cz = pos - (img.shape[0] - padding*2) // 2
         cz = cz * m._bpm_detect.units[-1]
 
         image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=tuple(conv_subblocks))
@@ -156,8 +168,8 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
 
     return out, out_desc
     
-
-def sim_from_definition(def_path):
+    
+def load_params(def_path):
     
     # load settings
     with open(def_path, 'r') as fd:
@@ -188,60 +200,111 @@ def sim_from_definition(def_path):
     padding = params['padding']
     conv_subblocks = params['conv_subblocks']
     bprop_nvolumes = params['bprop_nvolumes']
+    
+    res = Namespace()
+    res.__dict__.update(params)
+    return res
 
-    img = load_tiff_sequence(raw_data_path)
+
+def preview_from_definition(def_path, z=0):
+    
+    params = load_params(def_path)
+    img = load_tiff_sequence(params.raw_data_path)
+    
+    # downsample img
+    if params.downsampling > 1:
+        img = simple_downsample(img, params.downsampling)
+
+    # make ri-delta from signal
+    dn = dn_from_signal(img, params.ri_medium, params.ri_delta_range)
+
+    # make descriptor img
+    desc_img = np.zeros_like(img)
+    for field in params.fields.values():
+        for point in field['points']:
+            point = list(np.array(point) // params.downsampling)
+            desc_img[tuple(point)] = 1
+    
+    # blur slightly
+    desc_img = ndi.gaussian_filter(desc_img, 1.0)
+    
+    res = {}
+    for lam, right_illum in product(params.lambdas, ([False] if not params.two_sided_illum else [True, False])):
+        for xi in range(len(params.x_locs)):
+            
+            physical_dims_ = tuple(list(np.array(params.phys_dims)//params.downsampling))
+            ls_pos_ = np.interp(params.x_locs[xi]//params.downsampling, (0, params.raw_data_dims[2]//params.downsampling), (0, params.phys_dims[0]//params.downsampling))
+
+            # simulate signal and descriptors
+            out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, params.na_illum,
+                                                      params.na_detect, physical_dims_, ls_pos_,
+                                                      lam, params.ri_medium, params.ri_delta_range, params.padding,
+                                                      params.conv_subblocks, params.bprop_nvolumes, z_plane_subset=z)
+            
+            k = (lam, right_illum, xi)
+            res[k] = (out_signal, out_desc)
+
+    return res
+            
+    
+def sim_from_definition(def_path):
+    
+    # load settings
+    params = load_params(def_path)
+
+    img = load_tiff_sequence(params.raw_data_path)
     
     # LOG: loaded raw data
 
     # downsample img
-    if downsampling > 1:
-        img = simple_downsample(img, downsampling)
+    if params.downsampling > 1:
+        img = simple_downsample(img, params.downsampling)
         # LOG: downsampled
 
-    dn = dn_from_signal(img, ri_medium, ri_delta_range)
+    dn = dn_from_signal(img, params.ri_medium, params.ri_delta_range)
 
     # make descriptor img
     desc_img = np.zeros_like(img)
-    for field in params['fields'].values():
+    for field in params.fields.values():
         for point in field['points']:
-            point = list(np.array(point) // downsampling)
+            point = list(np.array(point) // params.downsampling)
             desc_img[tuple(point)] = 1
     
     # TODO: blur slightly?
     desc_img = ndi.gaussian_filter(desc_img, 1.0)
 
-    for lam, right_illum in product(lambdas, ([False] if not two_sided_illum else [True, False])):
+    for lam, right_illum in product(params.lambdas, ([False] if not params.two_sided_illum else [True, False])):
 
-        for xi in range(len(x_locs)):
+        for xi in range(len(params.x_locs)):
 
-            physical_dims_ = tuple(list(np.array(phys_dims)//downsampling))
-            ls_pos_ = np.interp(x_locs[xi]//downsampling, (0, raw_data_dims[2]//downsampling), (0, phys_dims[0]//downsampling))
+            physical_dims_ = tuple(list(np.array(params.phys_dims)//params.downsampling))
+            ls_pos_ = np.interp(params.x_locs[xi]//params.downsampling, (0, params.raw_data_dims[2]//params.downsampling), (0, params.phys_dims[0]//params.downsampling))
 
             # simulate signal and descriptors
-            out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, na_illum, na_detect, physical_dims_, ls_pos_,
-                               lam, ri_medium, ri_delta_range, padding, conv_subblocks, bprop_nvolumes)
+            out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, params.na_illum, params.na_detect, physical_dims_, ls_pos_,
+                               lam, params.ri_medium, params.ri_delta_range, params.padding, params.conv_subblocks, params.bprop_nvolumes)
 
             # save the whole simulated volume
-            out_dir_all = save_fstring.format(x=xi, y='all', z='all', lam=lam, illum=(1 if not right_illum else 2))
+            out_dir_all = params.save_fstring.format(x=xi, y='all', z='all', lam=lam, illum=(1 if not right_illum else 2))
             save_as_sequence(out_signal, out_dir_all, file_pattern='bbeam_sim_c1_z{plane}.tif')
             save_as_sequence(out_desc, out_dir_all, file_pattern='bbeam_sim_c2_z{plane}.tif')
 
-            yidx, zidx = np.meshgrid(range(len(y_locs)), range(len(z_locs)))    
+            yidx, zidx = np.meshgrid(range(len(params.y_locs)), range(len(params.z_locs)))    
             for yi, zi in zip(yidx.flat, zidx.flat):
 
-                field_info = fields[','.join(map(str, (xi, yi, zi)))]
+                field_info = params.fields[','.join(map(str, (xi, yi, zi)))]
                 off = field_info['off']
-                loc = [z_locs[zi], y_locs[yi], x_locs[xi]]
-                min_ = np.array(loc) + np.array(off) - np.ceil(np.array(fov_size) / 2)
-                max_ = np.array(loc) + np.array(off) + np.floor(np.array(fov_size) / 2)
+                loc = [params.z_locs[zi], params.y_locs[yi], params.x_locs[xi]]
+                min_ = np.array(loc) + np.array(off) - np.ceil(np.array(params.fov_size) / 2)
+                max_ = np.array(loc) + np.array(off) + np.floor(np.array(params.fov_size) / 2)
 
                 # out dir
-                out_dir = save_fstring.format(x=xi, y=yi, z=zi, lam=lam, illum=(1 if not right_illum else 2))
+                out_dir = params.save_fstring.format(x=xi, y=yi, z=zi, lam=lam, illum=(1 if not right_illum else 2))
 
                 # cut signal and descriptors
                 # NB: downsampling
-                min_ = min_//downsampling
-                max_ = max_//downsampling
+                min_ = min_//params.downsampling
+                max_ = max_//params.downsampling
 
                 idxs = tuple([slice(int(mi), int(ma)) for mi, ma in zip(min_, max_)])
 
