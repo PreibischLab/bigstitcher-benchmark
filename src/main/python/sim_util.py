@@ -5,7 +5,7 @@ import warnings
 from itertools import product
 from argparse import Namespace
 import numpy as np
-from skimage.io import imread_collection
+from skimage.io import imread_collection, imread
 from skimage.io import imsave
 import biobeam
 from scipy import ndimage as ndi
@@ -96,15 +96,34 @@ def save_as_sequence(img, base_path, file_pattern='image{plane}.tif', pad_idx=Tr
             imsave(os.path.join(base_path, file_pattern.format(plane=plane_padded)), img_i)
         
         
-def load_tiff_sequence(raw_data_path, pattern=None):
+def load_tiff_sequence(raw_data_path, pattern=None, downsampling=None):
     # load data
     files = os.listdir(raw_data_path)
     files.sort(key=lambda f: split_str_digit(f))
 
+    files = [f for f in files if (re.match(pattern, f) if pattern else True)]
+
+    # load downsampled:
+    if downsampling is not None:
+        files = [f for i,f in enumerate(files) if i%downsampling == 0]
+
     # read raw phantom
-    ic = imread_collection([os.path.join(raw_data_path, f) for f in files if (re.match(pattern, f) if pattern else True)])
-    img = ic.concatenate()
-    return img
+    if downsampling is None:
+        ic = imread_collection([os.path.join(raw_data_path, f) for f in files])
+        img = ic.concatenate()
+        return img
+
+    # this should work even if we do no downsampling
+    # keep it in the else anyway for the time being
+    else:
+        out = None
+        for (i,f) in enumerate(files):
+            img_i = imread(os.path.join(raw_data_path, f))
+            img_i = simple_downsample(img_i, downsampling)
+            if out is None:
+                out = np.zeros( (len(files),) + img_i.shape, dtype=img_i.dtype)
+            out[i] = img_i
+        return out
 
 
 def sim_lightsheet_img(img, desc, dn, right_illum,
@@ -185,6 +204,9 @@ def load_params(def_path):
     na_detect = params['na_detect']
     ri_medium =  params['ri_medium']
     ri_delta_range = params['ri_delta_range']
+    if not 'clip_max_ri' in params:
+        params['clip_max_ri'] = None
+    clip_max_ri = params['clip_max_ri']
     two_sided_illum = params['two_sided_illum']
     lambdas = params['lambdas']
     fov_size = params['fov_size']
@@ -209,14 +231,14 @@ def load_params(def_path):
 def preview_from_definition(def_path, z=0):
     
     params = load_params(def_path)
-    img = load_tiff_sequence(params.raw_data_path)
+    img = load_tiff_sequence(params.raw_data_path, downsampling=None if params.downsampling <= 1 else params.downsampling)
     
     # downsample img
-    if params.downsampling > 1:
-        img = simple_downsample(img, params.downsampling)
+    #if params.downsampling > 1:
+    #    img = simple_downsample(img, params.downsampling)
 
     # make ri-delta from signal
-    dn = dn_from_signal(img, params.ri_medium, params.ri_delta_range)
+    dn = dn_from_signal(img, params.ri_medium, params.ri_delta_range, params.clip_max_ri)
 
     # make descriptor img
     desc_img = np.zeros_like(img)
@@ -226,8 +248,9 @@ def preview_from_definition(def_path, z=0):
             desc_img[tuple(point)] = 1
     
     # blur slightly
-    desc_img = ndi.gaussian_filter(desc_img, 1.0)
-    
+    desc_img = ndi.gaussian_filter(desc_img, 0.5)
+    img = ndi.gaussian_filter(img, 0.5)
+
     res = {}
     for lam, right_illum in product(params.lambdas, ([False] if not params.two_sided_illum else [True, False])):
         for xi in range(len(params.x_locs)):
@@ -252,16 +275,16 @@ def sim_from_definition(def_path):
     # load settings
     params = load_params(def_path)
 
-    img = load_tiff_sequence(params.raw_data_path)
+    img = load_tiff_sequence(params.raw_data_path, downsampling=None if params.downsampling <= 1 else params.downsampling)
     
     # LOG: loaded raw data
 
     # downsample img
-    if params.downsampling > 1:
-        img = simple_downsample(img, params.downsampling)
+    #if params.downsampling > 1:
+    #    img = simple_downsample(img, params.downsampling)
         # LOG: downsampled
 
-    dn = dn_from_signal(img, params.ri_medium, params.ri_delta_range)
+    dn = dn_from_signal(img, params.ri_medium, params.ri_delta_range, params.clip_max_ri)
 
     # make descriptor img
     desc_img = np.zeros_like(img)
@@ -269,9 +292,10 @@ def sim_from_definition(def_path):
         for point in field['points']:
             point = list(np.array(point) // params.downsampling)
             desc_img[tuple(point)] = 1
-    
-    # TODO: blur slightly?
-    desc_img = ndi.gaussian_filter(desc_img, 1.0)
+
+    # blur slightly
+    desc_img = ndi.gaussian_filter(desc_img, 0.5)
+    img = ndi.gaussian_filter(img, 0.5)
 
     for lam, right_illum in product(params.lambdas, ([False] if not params.two_sided_illum else [True, False])):
 
@@ -361,7 +385,12 @@ def random_spots_in_radius(n_spots, n_dim, radius):
     return np.array(res_spots)
 
 
-def dn_from_signal(signal, ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE):
+def dn_from_signal(signal, ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE, clip_max=None):
+
+    # clip signal for ri generation
+    if clip_max is not None:
+        signal = np.clip(signal, 0, clip_max)
+
     dn = signal / np.max(signal) * ri_medium * (ri_range[1] - ri_range[0]) + ri_medium * ri_range[0]
     # no ri change where we have no signal/tissue
     dn[signal==0] = 0
