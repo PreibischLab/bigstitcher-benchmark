@@ -304,8 +304,9 @@ def sim_from_definition(def_path):
 
         for xi in range(len(params.x_locs)):
 
-            physical_dims_ = tuple(list(np.array(params.phys_dims)//params.downsampling))
-            ls_pos_ = np.interp(params.x_locs[xi]//params.downsampling, (0, params.raw_data_dims[2]//params.downsampling), (0, params.phys_dims[0]//params.downsampling))
+            physical_dims_ = tuple(list(np.array(params.phys_dims)))
+            ls_pos_ = np.interp(params.x_locs[xi], (0, params.raw_data_dims[2]), (0, params.phys_dims[0]))
+
             # only simulate necessary planes if desired
             cut_min, cut_max = get_minmax_cut(params, xi)
             z_subset = None if not params.only_necessary_planes else list(range(cut_min[0], cut_max[0]))
