@@ -222,6 +222,9 @@ def load_params(def_path):
     padding = params['padding']
     conv_subblocks = params['conv_subblocks']
     bprop_nvolumes = params['bprop_nvolumes']
+    if not 'only_necessary_planes' in params:
+        params['only_necessary_planes'] = False
+    only_necessary_planes = params['only_necessary_planes']
     
     res = Namespace()
     res.__dict__.update(params)
@@ -303,10 +306,16 @@ def sim_from_definition(def_path):
 
             physical_dims_ = tuple(list(np.array(params.phys_dims)//params.downsampling))
             ls_pos_ = np.interp(params.x_locs[xi]//params.downsampling, (0, params.raw_data_dims[2]//params.downsampling), (0, params.phys_dims[0]//params.downsampling))
+            # only simulate necessary planes if desired
+            cut_min, cut_max = get_minmax_cut(params, xi)
+            z_subset = None if not params.only_necessary_planes else list(range(cut_min[0], cut_max[0]))
 
             # simulate signal and descriptors
-            out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, params.na_illum, params.na_detect, physical_dims_, ls_pos_,
-                               lam, params.ri_medium, params.ri_delta_range, params.padding, params.conv_subblocks, params.bprop_nvolumes)
+            out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, params.na_illum,
+                                                      params.na_detect, physical_dims_, ls_pos_,
+                                                      lam, params.ri_medium, params.ri_delta_range,
+                                                      params.padding, params.conv_subblocks, params.bprop_nvolumes,
+                                                      z_plane_subset=z_subset)
 
             # save the whole simulated volume
             out_dir_all = params.save_fstring.format(x=xi, y='all', z='all', lam=lam, illum=(1 if not right_illum else 2))
@@ -330,11 +339,45 @@ def sim_from_definition(def_path):
                 min_ = min_//params.downsampling
                 max_ = max_//params.downsampling
 
+                # correct for offset due to subset of planes simulated
+                if params.only_necessary_planes:
+                    min_[0] -= cut_min[0]
+                    max_[0] -= cut_min[0]
+
                 idxs = tuple([slice(int(mi), int(ma)) for mi, ma in zip(min_, max_)])
 
                 # save
                 save_as_sequence(out_signal[idxs], out_dir, file_pattern='bbeam_sim_c1_z{plane}.tif')
                 save_as_sequence(out_desc[idxs], out_dir, file_pattern='bbeam_sim_c2_z{plane}.tif')
+
+
+def get_minmax_cut(params, xi):
+    """
+    get minimum / maximum of intervals we want to cut at a given x position
+    takes downsampling into account!
+
+    :param params: parameter dict
+    :param xi: index of x position
+    :return:  min and max as int-arrays
+    """
+
+    min_ = np.full(3, np.iinfo(np.int).max)
+    max_ = np.full(3, np.iinfo(np.int).min)
+
+    yidx, zidx = np.meshgrid(range(len(params.y_locs)), range(len(params.z_locs)))
+    for yi, zi in zip(yidx.flat, zidx.flat):
+        field_info = params.fields[','.join(map(str, (xi, yi, zi)))]
+        off = field_info['off']
+        loc = [params.z_locs[zi], params.y_locs[yi], params.x_locs[xi]]
+        min_i = np.array(loc) + np.array(off) - np.ceil(np.array(params.fov_size) / 2)
+        max_i = np.array(loc) + np.array(off) + np.floor(np.array(params.fov_size) / 2)
+        min_i = min_i // params.downsampling
+        max_i = max_i // params.downsampling
+
+        min_ = np.min(np.stack([min_, min_i]), axis=0)
+        max_ = np.max(np.stack([max_, max_i]), axis=0)
+
+    return min_, max_
 
 
 def simple_downsample(a, factors):
