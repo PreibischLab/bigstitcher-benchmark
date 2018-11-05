@@ -309,7 +309,7 @@ def sim_from_definition(def_path):
 
             # only simulate necessary planes if desired
             cut_min, cut_max = get_minmax_cut(params, xi)
-            z_subset = None if not params.only_necessary_planes else list(range(cut_min[0], cut_max[0]))
+            z_subset = None if not params.only_necessary_planes else list(range(int(cut_min[0]), int(cut_max[0])))
 
             # simulate signal and descriptors
             out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, params.na_illum,
@@ -362,8 +362,8 @@ def get_minmax_cut(params, xi):
     :return:  min and max as int-arrays
     """
 
-    min_ = np.full(3, np.iinfo(np.int).max)
-    max_ = np.full(3, np.iinfo(np.int).min)
+    min_ = np.full(3, np.iinfo(np.int).max, dtype=np.int)
+    max_ = np.full(3, np.iinfo(np.int).min, dtype=np.int)
 
     yidx, zidx = np.meshgrid(range(len(params.y_locs)), range(len(params.z_locs)))
     for yi, zi in zip(yidx.flat, zidx.flat):
