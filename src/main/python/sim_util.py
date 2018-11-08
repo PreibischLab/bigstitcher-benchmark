@@ -2,6 +2,7 @@ import os
 import re
 import json
 import warnings
+import logging
 from itertools import product
 from argparse import Namespace
 import numpy as np
@@ -96,7 +97,7 @@ def save_as_sequence(img, base_path, file_pattern='image{plane}.tif', pad_idx=Tr
             imsave(os.path.join(base_path, file_pattern.format(plane=plane_padded)), img_i)
         
         
-def load_tiff_sequence(raw_data_path, pattern=None, downsampling=None):
+def load_tiff_sequence(raw_data_path, pattern=None, downsampling=None, dtype=None):
     # load data
     files = os.listdir(raw_data_path)
     files.sort(key=lambda f: split_str_digit(f))
@@ -106,11 +107,17 @@ def load_tiff_sequence(raw_data_path, pattern=None, downsampling=None):
     # load downsampled:
     if downsampling is not None:
         files = [f for i,f in enumerate(files) if i%downsampling == 0]
+        
+    logging.debug('reading {} files from directory {}.'.format(len(files), raw_data_path))
 
     # read raw phantom
     if downsampling is None:
         ic = imread_collection([os.path.join(raw_data_path, f) for f in files])
         img = ic.concatenate()
+        logging.debug('loading done.')
+        if dtype is not None:
+            img = img.astype(dtype)
+        
         return img
 
     # this should work even if we do no downsampling
@@ -123,29 +130,38 @@ def load_tiff_sequence(raw_data_path, pattern=None, downsampling=None):
             if out is None:
                 out = np.zeros( (len(files),) + img_i.shape, dtype=img_i.dtype)
             out[i] = img_i
+        logging.debug('loading done.')
+        if dtype is not None:
+            out = out.astype(dtype)
         return out
 
 
 def sim_lightsheet_img(img, desc, dn, right_illum,
                    na_illum, na_detect,
                    physical_dims=(400,400,50), ls_pos=200, lam=500,
-                   ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE, padding=CONV_PADDING, conv_subblocks=DEFAULT_CONV_SUBBLOCKS,
+                   ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE, padding=CONV_PADDING,
+                   is_padded=False, conv_subblocks=DEFAULT_CONV_SUBBLOCKS,
                    bprop_nvolumes=4, z_plane_subset=None):
     
-    # zero-pad image for conv
-    img = np.pad(img, ((padding,padding),(0,0),(0,0)), "constant")
-    desc = np.pad(desc, ((padding,padding),(0,0),(0,0)), "constant")
-    dn = np.pad(dn, ((padding,padding),(0,0),(0,0)), "constant")
+    logging.debug('applying padding to images.')
     
+    # zero-pad image for conv
+    if not is_padded:
+        img = np.pad(img, ((padding,padding),(0,0),(0,0)), "constant")
+        dn = np.pad(dn, ((padding,padding),(0,0),(0,0)), "constant")
+    logging.debug('applying padding to images done.')
+    
+    logging.debug('flipping images.')
     # simulate right illumination with flip of x-axis
     if right_illum:
         img = np.flip(img, 2)
-        desc = np.flip(desc, 2)
         dn = np.flip(dn, 2)
+    logging.debug('flipping images done.')
     
     if right_illum:
         ls_pos = physical_dims[0] - ls_pos
     
+    logging.debug('setting up simulators.')
     # create a microscope simulator for signal
     m = biobeam.SimLSM_Cylindrical(dn = dn, signal = img,
                        zfoc_illum=ls_pos,
@@ -153,13 +169,7 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
                        n_volumes=bprop_nvolumes, lam_illum =lam/1000, lam_detect =lam/1000,
                        size = physical_dims, n0 = ri_medium)
     
-    # create a microscope simulator for descriptors
-    m_desc = biobeam.SimLSM_Cylindrical(dn = dn, signal = desc,
-                       zfoc_illum=ls_pos,
-                       NA_illum=na_illum, NA_detect=na_detect,
-                       n_volumes=bprop_nvolumes, lam_illum =lam/1000, lam_detect =lam/1000,
-                       size = physical_dims, n0 = ri_medium)
-    
+    logging.debug('setting up simulators done.')
     
     # make sure z-plane subset is iterable
     if z_plane_subset is not None and np.isscalar(z_plane_subset):
@@ -176,15 +186,27 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
     
     for i, pos in enumerate(z_positions):
 
+        logging.debug('simulating signal plane {} of {}.'.format(i+1, len(z_positions)))
         cz = pos - (img.shape[0] - padding*2) // 2
         cz = cz * m._bpm_detect.units[-1]
 
         image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=tuple(conv_subblocks))
         out[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
+    
+    if not is_padded:
+        desc = np.pad(desc, ((padding,padding),(0,0),(0,0)), "constant")
+    if right_illum:
+        desc = np.flip(desc, 2)
+    
+    m.signal = desc    
+    for i, pos in enumerate(z_positions):
+        logging.debug('simulating descriptors plane {} of {}.'.format(i+1, len(z_positions)))
+        cz = pos - (img.shape[0] - padding*2) // 2
+        cz = cz * m._bpm_detect.units[-1]
         
-        image = m_desc.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=tuple(conv_subblocks))
+        image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=tuple(conv_subblocks))
         out_desc[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
-
+    
     return out, out_desc
     
     
@@ -234,38 +256,49 @@ def load_params(def_path):
 def preview_from_definition(def_path, z=0):
     
     params = load_params(def_path)
-    img = load_tiff_sequence(params.raw_data_path, downsampling=None if params.downsampling <= 1 else params.downsampling)
+    img = load_tiff_sequence(params.raw_data_path, downsampling=None if params.downsampling <= 1 else params.downsampling, dtype=np.float16)
     
     # downsample img
     #if params.downsampling > 1:
     #    img = simple_downsample(img, params.downsampling)
 
     # make ri-delta from signal
+    logging.debug('generating r.i. delta image.')
     dn = dn_from_signal(img, params.ri_medium, params.ri_delta_range, params.clip_max_ri)
+    logging.debug('generating r.i. delta image done.')
 
     # make descriptor img
+    logging.debug('generating descriptor image.')
     desc_img = np.zeros_like(img)
     for field in params.fields.values():
         for point in field['points']:
             point = list(np.array(point) // params.downsampling)
             desc_img[tuple(point)] = 1
+    logging.debug('generating descriptor image done.')
     
     # blur slightly
-    desc_img = ndi.gaussian_filter(desc_img, 0.5)
-    img = ndi.gaussian_filter(img, 0.5)
+    logging.debug('applying blur to images.')
+    #desc_img = ndi.gaussian_filter(desc_img, 0.5)
+    #img = ndi.gaussian_filter(img, 0.5)
+    logging.debug('applying blur to images done.')
+    
+    # pad right away, otherwise images are copied later on
+    img = np.pad(img, ((params.padding,params.padding),(0,0),(0,0)), "constant")
+    dn = np.pad(dn, ((params.padding,params.padding),(0,0),(0,0)), "constant")
+    desc_img = np.pad(desc_img, ((params.padding,params.padding),(0,0),(0,0)), "constant")
 
     res = {}
     for lam, right_illum in product(params.lambdas, ([False] if not params.two_sided_illum else [True, False])):
         for xi in range(len(params.x_locs)):
             
-            physical_dims_ = tuple(list(np.array(params.phys_dims)//params.downsampling))
-            ls_pos_ = np.interp(params.x_locs[xi]//params.downsampling, (0, params.raw_data_dims[2]//params.downsampling), (0, params.phys_dims[0]//params.downsampling))
+            physical_dims_ = tuple(list(np.array(params.phys_dims)))
+            ls_pos_ = np.interp(params.x_locs[xi], (0, params.raw_data_dims[2]), (0, params.phys_dims[0]))
 
             # simulate signal and descriptors
             out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, params.na_illum,
                                                       params.na_detect, physical_dims_, ls_pos_,
-                                                      lam, params.ri_medium, params.ri_delta_range, params.padding,
-                                                      params.conv_subblocks, params.bprop_nvolumes, z_plane_subset=z)
+                                                      lam, params.ri_medium, params.ri_delta_range, params.padding, True,
+                                                      params.conv_subblocks, params.bprop_nvolumes, z_plane_subset=z )
             
             k = (lam, right_illum, xi)
             res[k] = (out_signal, out_desc)
@@ -299,6 +332,11 @@ def sim_from_definition(def_path):
     # blur slightly
     desc_img = ndi.gaussian_filter(desc_img, 0.5)
     img = ndi.gaussian_filter(img, 0.5)
+                                
+    # pad right away, otherwise images are copied later on
+    img = np.pad(img, ((params.padding,params.padding),(0,0),(0,0)), "constant")
+    dn = np.pad(dn, ((params.padding,params.padding),(0,0),(0,0)), "constant")
+    desc_img = np.pad(desc_img, ((params.padding,params.padding),(0,0),(0,0)), "constant")
 
     for lam, right_illum in product(params.lambdas, ([False] if not params.two_sided_illum else [True, False])):
 
@@ -315,7 +353,7 @@ def sim_from_definition(def_path):
             out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, params.na_illum,
                                                       params.na_detect, physical_dims_, ls_pos_,
                                                       lam, params.ri_medium, params.ri_delta_range,
-                                                      params.padding, params.conv_subblocks, params.bprop_nvolumes,
+                                                      params.padding, True, params.conv_subblocks, params.bprop_nvolumes,
                                                       z_plane_subset=z_subset)
 
             # save the whole simulated volume
