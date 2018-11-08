@@ -139,7 +139,7 @@ def load_tiff_sequence(raw_data_path, pattern=None, downsampling=None, dtype=Non
 def sim_lightsheet_img(img, desc, dn, right_illum,
                    na_illum, na_detect,
                    physical_dims=(400,400,50), ls_pos=200, lam=500,
-                   ri_medium=RI_DEFAULT, ri_range=RI_DELTA_RANGE, padding=CONV_PADDING,
+                   ri_medium=RI_DEFAULT, padding=CONV_PADDING,
                    is_padded=False, conv_subblocks=DEFAULT_CONV_SUBBLOCKS,
                    bprop_nvolumes=4, z_plane_subset=None):
     
@@ -176,13 +176,13 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
         z_plane_subset = [z_plane_subset]    
     
     print('simulating images at z-position-subset: {}'.format(z_plane_subset))
-    
-    # get positions and number of planes to simulate
-    z_shape = (img.shape[0] - padding*2,) if z_plane_subset is None else (len(z_plane_subset), )
-    z_positions = range(out.shape[0]) if z_plane_subset is None else z_plane_subset
-    
+
+    z_shape = (img.shape[0] - padding * 2,) if z_plane_subset is None else (len(z_plane_subset),)
     out = np.zeros(z_shape + img.shape[1:], dtype=img.dtype)
-    out_desc = np.zeros(z_shape + img.shape[1:], dtype=img.dtype)
+    out_desc = None if desc is None else np.zeros(z_shape + img.shape[1:], dtype=img.dtype)
+
+    # get positions and number of planes to simulate
+    z_positions = range(out.shape[0]) if z_plane_subset is None else z_plane_subset
     
     for i, pos in enumerate(z_positions):
 
@@ -192,20 +192,21 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
 
         image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=tuple(conv_subblocks))
         out[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
-    
-    if not is_padded:
-        desc = np.pad(desc, ((padding,padding),(0,0),(0,0)), "constant")
-    if right_illum:
-        desc = np.flip(desc, 2)
-    
-    m.signal = desc    
-    for i, pos in enumerate(z_positions):
-        logging.debug('simulating descriptors plane {} of {}.'.format(i+1, len(z_positions)))
-        cz = pos - (img.shape[0] - padding*2) // 2
-        cz = cz * m._bpm_detect.units[-1]
-        
-        image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=tuple(conv_subblocks))
-        out_desc[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
+
+    if desc is not None:
+        if not is_padded:
+            desc = np.pad(desc, ((padding,padding),(0,0),(0,0)), "constant")
+        if right_illum:
+            desc = np.flip(desc, 2)
+
+        m.signal = desc
+        for i, pos in enumerate(z_positions):
+            logging.debug('simulating descriptors plane {} of {}.'.format(i+1, len(z_positions)))
+            cz = pos - (img.shape[0] - padding*2) // 2
+            cz = cz * m._bpm_detect.units[-1]
+
+            image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=tuple(conv_subblocks))
+            out_desc[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
     
     return out, out_desc
     
