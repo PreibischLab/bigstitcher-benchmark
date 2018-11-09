@@ -190,7 +190,7 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
         cz = pos - (img.shape[0] - padding*2) // 2
         cz = cz * m._bpm_detect.units[-1]
 
-        image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(16,16), conv_sub_blocks=tuple(conv_subblocks))
+        image = m.simulate_image_z(cz=cz, zslice=padding, psf_grid_dim=(padding,padding), conv_sub_blocks=tuple(conv_subblocks))
         out[i] = image[padding] if not right_illum else np.flip(image[padding], 1)
 
     if desc is not None:
