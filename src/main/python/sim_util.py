@@ -331,7 +331,7 @@ def sim_from_definition(def_path):
     # make descriptor img
     if params.grid_descs is not None:
         Xs = np.meshgrid(*[np.arange(0,n) for n in img.shape], indexing='ij')
-        desc_img = np.prod([_X%params.grid_descs==0 for _X in Xs], axis = 0).astype(np.float32)
+        grid_img = np.prod([_X%params.grid_descs==0 for _X in Xs], axis = 0).astype(np.float32)
     else:
         desc_img = np.zeros_like(img)
         for field in params.fields.values():
@@ -342,11 +342,16 @@ def sim_from_definition(def_path):
     # blur slightly
     desc_img = ndi.gaussian_filter(desc_img, 0.5)
     img = ndi.gaussian_filter(img, 0.5)
+    if params.grid_descs is not None:
+        grid_img = ndi.gaussian_filter(grid_img, 0.5)
                                 
     # pad right away, otherwise images are copied later on
     img = np.pad(img, ((params.padding,params.padding),(0,0),(0,0)), "constant")
     dn = np.pad(dn, ((params.padding,params.padding),(0,0),(0,0)), "constant")
     desc_img = np.pad(desc_img, ((params.padding,params.padding),(0,0),(0,0)), "constant")
+
+    if params.grid_descs is not None:
+        grid_img = np.pad(grid_img, ((params.padding,params.padding),(0,0),(0,0)), "constant")
     
     print(img.shape)
     print(desc_img.shape)
@@ -374,7 +379,16 @@ def sim_from_definition(def_path):
             save_as_sequence(out_signal, out_dir_all, file_pattern='bbeam_sim_c1_z{plane}.tif')
             save_as_sequence(out_desc, out_dir_all, file_pattern='bbeam_sim_c2_z{plane}.tif')
 
-            yidx, zidx = np.meshgrid(range(len(params.y_locs)), range(len(params.z_locs)))    
+            if params.grid_descs is not None:
+                out_grid, _ = sim_lightsheet_img(grid_img, None, dn, right_illum, params.na_illum,
+                                                          params.na_detect, physical_dims_, ls_pos_,
+                                                          lam, params.ri_medium,
+                                                          params.padding, True, params.conv_subblocks,
+                                                          params.bprop_nvolumes,
+                                                          z_plane_subset=z_subset)
+                save_as_sequence(out_grid, out_dir_all, file_pattern='bbeam_sim_c3_z{plane}.tif')
+
+            yidx, zidx = np.meshgrid(range(len(params.y_locs)), range(len(params.z_locs)))
             for yi, zi in zip(yidx.flat, zidx.flat):
 
                 field_info = params.fields[','.join(map(str, (xi, yi, zi)))]
@@ -401,6 +415,8 @@ def sim_from_definition(def_path):
                 # save
                 save_as_sequence(out_signal[idxs], out_dir, file_pattern='bbeam_sim_c1_z{plane}.tif')
                 save_as_sequence(out_desc[idxs], out_dir, file_pattern='bbeam_sim_c2_z{plane}.tif')
+                if params.grid_descs is not None:
+                    save_as_sequence(out_grid[idxs], out_dir, file_pattern='bbeam_sim_c3_z{plane}.tif')
 
 
 def get_minmax_cut(params, xi):
