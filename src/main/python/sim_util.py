@@ -249,6 +249,11 @@ def load_params(def_path):
         params['only_necessary_planes'] = False
     only_necessary_planes = params['only_necessary_planes']
     
+    # if supplied, use a grid of point sources as descriptor channel
+    if not 'grid_descs' in params:
+        params['grid_descs'] = None
+    grid_descs = params['grid_descs']
+    
     res = Namespace()
     res.__dict__.update(params)
     return res
@@ -298,7 +303,7 @@ def preview_from_definition(def_path, z=0):
             # simulate signal and descriptors
             out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, params.na_illum,
                                                       params.na_detect, physical_dims_, ls_pos_,
-                                                      lam, params.ri_medium, params.ri_delta_range, params.padding, True,
+                                                      lam, params.ri_medium, params.padding, True,
                                                       params.conv_subblocks, params.bprop_nvolumes, z_plane_subset=z )
             
             k = (lam, right_illum, xi)
@@ -324,11 +329,15 @@ def sim_from_definition(def_path):
     dn = dn_from_signal(img, params.ri_medium, params.ri_delta_range, params.clip_max_ri)
 
     # make descriptor img
-    desc_img = np.zeros_like(img)
-    for field in params.fields.values():
-        for point in field['points']:
-            point = list(np.array(point) // params.downsampling)
-            desc_img[tuple(point)] = 1
+    if params.grid_descs is not None:
+        Xs = np.meshgrid(*[np.arange(0,n) for n in img.shape], indexing='ij')
+        desc_img = np.prod([_X%params.grid_descs==0 for _X in Xs], axis = 0).astype(np.float32)
+    else:
+        desc_img = np.zeros_like(img)
+        for field in params.fields.values():
+            for point in field['points']:
+                point = list(np.array(point) // params.downsampling)
+                desc_img[tuple(point)] = 1
 
     # blur slightly
     desc_img = ndi.gaussian_filter(desc_img, 0.5)
@@ -338,6 +347,9 @@ def sim_from_definition(def_path):
     img = np.pad(img, ((params.padding,params.padding),(0,0),(0,0)), "constant")
     dn = np.pad(dn, ((params.padding,params.padding),(0,0),(0,0)), "constant")
     desc_img = np.pad(desc_img, ((params.padding,params.padding),(0,0),(0,0)), "constant")
+    
+    print(img.shape)
+    print(desc_img.shape)
 
     for lam, right_illum in product(params.lambdas, ([False] if not params.two_sided_illum else [True, False])):
 
@@ -353,7 +365,7 @@ def sim_from_definition(def_path):
             # simulate signal and descriptors
             out_signal, out_desc = sim_lightsheet_img(img, desc_img, dn, right_illum, params.na_illum,
                                                       params.na_detect, physical_dims_, ls_pos_,
-                                                      lam, params.ri_medium, params.ri_delta_range,
+                                                      lam, params.ri_medium,
                                                       params.padding, True, params.conv_subblocks, params.bprop_nvolumes,
                                                       z_plane_subset=z_subset)
 
