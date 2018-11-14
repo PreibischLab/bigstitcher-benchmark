@@ -24,6 +24,7 @@ import ij.ImageJ;
 import ij.ImagePlus;
 import net.imglib2.Cursor;
 import net.imglib2.FinalInterval;
+import net.imglib2.Point;
 import net.imglib2.RandomAccessibleInterval;
 import net.imglib2.RealPoint;
 import net.imglib2.RealRandomAccess;
@@ -60,6 +61,10 @@ public class SimulateTissue
 		float maxRadiusSmall = 4;
 		float minValueSmall = 4.0f;
 		float maxValueSmall = 6.0f;
+
+		boolean singleSpheroid = true;
+		long[] spheroidPos = new long[3];
+		double speroidRadius = 500.0;
 
 		double[] transform = new AffineTransform3D().getRowPackedCopy();
 
@@ -104,14 +109,21 @@ public class SimulateTissue
 		final Random rnd = new Random( params.seed );
 
 		// general tissue shape: thresholded Perlin noise
-		RealRandomAccessible< FloatType > rrablePerlin = new PerlinNoiseRealRandomAccessible<>( new FloatType(), params.perlinScales, new int[] {15, 15, 15}, 100, rnd );
-		RealRandomAccessible< FloatType > rrablePerlinThrd = new SimpleCalculatedRealRandomAccessible<FloatType>( new FloatType(), (a,b) -> {
+		RealRandomAccessible< FloatType > rrableTissue = new PerlinNoiseRealRandomAccessible<>( new FloatType(), params.perlinScales, new int[] {15, 15, 15}, 100, rnd );
+
+		if (params.singleSpheroid)
+		{
+			rrableTissue = new HypersphereCollectionRealRandomAccessible<>( params.min.length, new FloatType() );
+			((HypersphereCollectionRealRandomAccessible<FloatType>) rrableTissue).addSphere( new Point( params.spheroidPos ), params.speroidRadius, new FloatType(1.0f) );
+		}
+
+		RealRandomAccessible< FloatType > rrableTissueThrd = new SimpleCalculatedRealRandomAccessible<FloatType>( new FloatType(), (a,b) -> {
 			a.setReal( b.iterator().next().get() > params.perlinThresh ? 1.0 : 0);
-		}, rrablePerlin);
+		}, rrableTissue);
 
 		// create big spherical objects within tissue
 		// these serve as density for sampling of smaller points
-		List< RealPoint > bigSpherePositions = PointRejectionSampling.sampleRealPoints( new FinalInterval( params.min, params.max ), params.nBigSpheres, rrablePerlinThrd, rnd );
+		List< RealPoint > bigSpherePositions = PointRejectionSampling.sampleRealPoints( new FinalInterval( params.min, params.max ), params.nBigSpheres, rrableTissueThrd, rnd );
 		List<Double> bigSphereRadii = new ArrayList<>();
 		HypersphereCollectionRealRandomAccessible< FloatType > rrableDensity = new HypersphereCollectionRealRandomAccessible<>( params.min.length, new FloatType() );
 		for (int i=0; i<params.nBigSpheres; i++)
@@ -156,7 +168,7 @@ public class SimulateTissue
 			for (FloatType t: b )
 				res = Math.max( res, t.getRealFloat() );
 			a.setReal( res );
-		}, rrableBigPoints, rrableSmallPoints, rrablePerlinThrd);
+		}, rrableBigPoints, rrableSmallPoints, rrableTissueThrd);
 
 		// transform the image with an arbitrary affine transform
 		AffineTransform transform = new AffineTransform( params.min.length );
