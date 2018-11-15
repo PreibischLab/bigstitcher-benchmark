@@ -332,12 +332,12 @@ def sim_from_definition(def_path):
     if params.grid_descs is not None:
         Xs = np.meshgrid(*[np.arange(0,n) for n in img.shape], indexing='ij')
         grid_img = np.prod([_X%params.grid_descs==0 for _X in Xs], axis = 0).astype(np.float32)
-    else:
-        desc_img = np.zeros_like(img)
-        for field in params.fields.values():
-            for point in field['points']:
-                point = list(np.array(point) // params.downsampling)
-                desc_img[tuple(point)] = 1
+   
+    desc_img = np.zeros_like(img)
+    for field in params.fields.values():
+        for point in field['points']:
+            point = list(np.array(point) // params.downsampling)
+            desc_img[tuple(point)] = 1
 
     # blur slightly
     desc_img = ndi.gaussian_filter(desc_img, 0.5)
