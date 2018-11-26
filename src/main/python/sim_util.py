@@ -10,6 +10,7 @@ from skimage.io import imread_collection, imread
 from skimage.io import imsave
 import biobeam
 from scipy import ndimage as ndi
+from PIL import Image
 
 
 # defaults
@@ -17,6 +18,85 @@ CONV_PADDING = 16
 RI_DEFAULT = 1.33
 RI_DELTA_RANGE = (.03, .05)
 DEFAULT_CONV_SUBBLOCKS = (4, 4)
+
+
+def save_tiff_stack(arr, fname, axis=0):
+    """
+    save array as tiff stack
+
+    Parameters
+    ----------
+    arr: array
+        3d-array to save
+    fname: string
+        path of output file
+    axis: int, optional
+        along which axis to create slices
+    """
+
+    def make_index_(i):
+        return tuple([i if j == axis else slice(d) for j, d in enumerate(arr.shape)])
+
+    imlist = [Image.fromarray(arr[make_index_(i)]) for i in range(arr.shape[axis])]
+    imlist[0].save(fname, save_all=True,
+                   append_images=imlist[1:])
+
+
+def get_centered_padded(a, loc, out_shape, pad_val=None):
+    """
+
+    Parameters
+    ----------
+    a: array
+        array to center/cut
+    loc: 1d-array-like
+        center of cut
+    out_shape:
+        shape of produced output
+    """
+
+    res = np.full(out_shape, 0 if pad_val is None else pad_val, dtype=a.dtype)
+
+    # get window in a centered on loc
+    max_ = np.floor(np.array(loc) + (np.array(out_shape)) / 2)
+    min_ = np.ceil(np.array(loc) - (np.array(out_shape)) / 2)
+
+    max_cut = np.min(np.stack([np.array(a.shape), max_]), axis=0).astype(np.int)
+    min_cut = np.max(np.stack([np.zeros_like(min_), min_]), axis=0).astype(np.int)
+
+    window = a[tuple([slice(mi, ma) for mi, ma in zip(min_cut, max_cut)])]
+
+    print(window.shape, min_cut, max_cut)
+
+    # where to copy to in output
+    center_out = (np.array(out_shape) - 1) / 2
+    max_res = (np.floor(center_out + (max_ - min_) / 2) - (max_ - max_cut)).astype(np.int)
+    min_res = (np.ceil(center_out - (max_ - min_) / 2) + (min_cut - min_)).astype(np.int)
+
+    print(center_out, min_res, max_res)
+    copy_to = res[tuple([slice(mi, ma) for mi, ma in zip(min_res, max_res)])]
+    copy_to[:] = window
+
+    return res
+
+
+def get_centered_padded2(a, off, out_shape, pad_val=None):
+    """
+    simpler version of centered/padded image
+
+    """
+
+    res = np.full(out_shape, 0 if pad_val is None else pad_val, dtype=a.dtype)
+    minmax = np.min(np.stack([np.array(a.shape), np.array(res.shape)]), axis=0)
+    siz_dif = np.array(res.shape) - np.array(a.shape)
+
+    slices = tuple([slice(0, ma) for ma in minmax])
+    res[slices] = a[slices]
+
+    for i, d in enumerate(siz_dif):
+        res = np.roll(res, int(d / 2 + off[i]), i)
+
+    return res
 
 
 def random_points_in_volume_min_distance(low, high, min_dist, n_points):
@@ -141,7 +221,7 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
                    physical_dims=(400,400,50), ls_pos=200, lam=500,
                    ri_medium=RI_DEFAULT, padding=CONV_PADDING,
                    is_padded=False, conv_subblocks=DEFAULT_CONV_SUBBLOCKS,
-                   bprop_nvolumes=4, z_plane_subset=None):
+                   bprop_nvolumes=4, z_plane_subset=None, flipped=False):
     
     logging.debug('applying padding to images.')
     
@@ -157,6 +237,11 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
         img = np.flip(img, 2)
         dn = np.flip(dn, 2)
     logging.debug('flipping images done.')
+
+    # flipped, i.e. rot 180deg around y axis
+    if flipped:
+        img = np.flip(img, (0,2))
+        dn = np.flip(dn, (0, 2))
     
     if right_illum:
         ls_pos = physical_dims[0] - ls_pos
@@ -216,7 +301,9 @@ def load_params(def_path):
     # load settings
     with open(def_path, 'r') as fd:
         params = json.load(fd)
-        
+
+    # NB: local references not necessary, left as comment for overview of all parameters
+    """ 
     save_fstring = params['save_fstring']
     seed = params['seed']
     raw_data_path = params['raw_data_path']
@@ -227,9 +314,6 @@ def load_params(def_path):
     na_detect = params['na_detect']
     ri_medium =  params['ri_medium']
     ri_delta_range = params['ri_delta_range']
-    if not 'clip_max_ri' in params:
-        params['clip_max_ri'] = None
-    clip_max_ri = params['clip_max_ri']
     two_sided_illum = params['two_sided_illum']
     lambdas = params['lambdas']
     fov_size = params['fov_size']
@@ -245,15 +329,27 @@ def load_params(def_path):
     padding = params['padding']
     conv_subblocks = params['conv_subblocks']
     bprop_nvolumes = params['bprop_nvolumes']
+    """
+
+    # NB: defaults for parameters introduced later
+
+    # do not clip signal for relative ri_delta by default
+    if not 'clip_max_ri' in params:
+        params['clip_max_ri'] = None
+
+    # by default, simulate all planes, not only necessary
     if not 'only_necessary_planes' in params:
         params['only_necessary_planes'] = False
-    only_necessary_planes = params['only_necessary_planes']
     
     # if supplied, use a grid of point sources as descriptor channel
     if not 'grid_descs' in params:
         params['grid_descs'] = None
-    grid_descs = params['grid_descs']
-    
+
+    # assume no multiview by default
+    if not 'two_views' in params:
+        params['two_views'] = False
+
+    # wrap in Namespace for convenient dot-operator access
     res = Namespace()
     res.__dict__.update(params)
     return res
@@ -353,10 +449,14 @@ def sim_from_definition(def_path):
     if params.grid_descs is not None:
         grid_img = np.pad(grid_img, ((params.padding,params.padding),(0,0),(0,0)), "constant")
     
-    print(img.shape)
-    print(desc_img.shape)
+    #print(img.shape)
+    #print(desc_img.shape)
 
-    for lam, right_illum in product(params.lambdas, ([False] if not params.two_sided_illum else [True, False])):
+    for lam, right_illum, flipped in product(
+            params.lambdas,
+            [True, False] if params.two_sided_illum else [False],
+            [True, False] if params.two_views else [False]
+    ):
 
         for xi in range(len(params.x_locs)):
 
@@ -364,7 +464,7 @@ def sim_from_definition(def_path):
             ls_pos_ = np.interp(params.x_locs[xi], (0, params.raw_data_dims[2]), (0, params.phys_dims[0]))
 
             # only simulate necessary planes if desired
-            cut_min, cut_max = get_minmax_cut(params, xi)
+            cut_min, cut_max = get_minmax_cut(params, xi, flipped)
             z_subset = None if not params.only_necessary_planes else list(range(int(cut_min[0]), int(cut_max[0])))
 
             # simulate signal and descriptors
@@ -372,10 +472,10 @@ def sim_from_definition(def_path):
                                                       params.na_detect, physical_dims_, ls_pos_,
                                                       lam, params.ri_medium,
                                                       params.padding, True, params.conv_subblocks, params.bprop_nvolumes,
-                                                      z_plane_subset=z_subset)
+                                                      z_plane_subset=z_subset, flipped=flipped)
 
             # save the whole simulated volume
-            out_dir_all = params.save_fstring.format(x=xi, y='all', z='all', lam=lam, illum=(1 if not right_illum else 2))
+            out_dir_all = params.save_fstring.format(x=xi, y='all', z='all', lam=lam, illum=(1 if not right_illum else 2), view=(1 if not flipped else 2))
             save_as_sequence(out_signal, out_dir_all, file_pattern='bbeam_sim_c1_z{plane}.tif')
             save_as_sequence(out_desc, out_dir_all, file_pattern='bbeam_sim_c2_z{plane}.tif')
 
@@ -385,7 +485,8 @@ def sim_from_definition(def_path):
                                                           lam, params.ri_medium,
                                                           params.padding, True, params.conv_subblocks,
                                                           params.bprop_nvolumes,
-                                                          z_plane_subset=z_subset)
+                                                          z_plane_subset=z_subset, flipped=flipped)
+
                 save_as_sequence(out_grid, out_dir_all, file_pattern='bbeam_sim_c3_z{plane}.tif')
 
             yidx, zidx = np.meshgrid(range(len(params.y_locs)), range(len(params.z_locs)))
@@ -394,11 +495,17 @@ def sim_from_definition(def_path):
                 field_info = params.fields[','.join(map(str, (xi, yi, zi)))]
                 off = field_info['off']
                 loc = [params.z_locs[zi], params.y_locs[yi], params.x_locs[xi]]
+
+                # NB: flipped image -> back to original coordinates in z
+                # TODO: commented for now, implicit conversion back to raw coordinates just in z may be confusing
+                #if flipped:
+                #    loc[0] = params.raw_data_dims[0] - params.z_locs[zi]
+
                 min_ = np.array(loc) + np.array(off) - np.ceil(np.array(params.fov_size) / 2)
                 max_ = np.array(loc) + np.array(off) + np.floor(np.array(params.fov_size) / 2)
 
                 # out dir
-                out_dir = params.save_fstring.format(x=xi, y=yi, z=zi, lam=lam, illum=(1 if not right_illum else 2))
+                out_dir = params.save_fstring.format(x=xi, y=yi, z=zi, lam=lam, illum=(1 if not right_illum else 2), view=(1 if not flipped else 2))
 
                 # cut signal and descriptors
                 # NB: downsampling
@@ -419,13 +526,15 @@ def sim_from_definition(def_path):
                     save_as_sequence(out_grid[idxs], out_dir, file_pattern='bbeam_sim_c3_z{plane}.tif')
 
 
-def get_minmax_cut(params, xi):
+def get_minmax_cut(params, xi, flipped=False):
     """
     get minimum / maximum of intervals we want to cut at a given x position
     takes downsampling into account!
 
     :param params: parameter dict
     :param xi: index of x position
+    :param flipped: whether imaging is done from a 180deg view or not
+        in the case of a flipped view,
     :return:  min and max as int-arrays
     """
 
@@ -437,6 +546,11 @@ def get_minmax_cut(params, xi):
         field_info = params.fields[','.join(map(str, (xi, yi, zi)))]
         off = field_info['off']
         loc = [params.z_locs[zi], params.y_locs[yi], params.x_locs[xi]]
+
+        # TODO: commented for now, implicit conversion back to raw coordinates just in z may be confusing
+        #if flipped:
+        #    loc = np.array(params.raw_data_dims) - np.array(loc)
+
         min_i = np.array(loc) + np.array(off) - np.ceil(np.array(params.fov_size) / 2)
         max_i = np.array(loc) + np.array(off) + np.floor(np.array(params.fov_size) / 2)
         min_i = min_i // params.downsampling
