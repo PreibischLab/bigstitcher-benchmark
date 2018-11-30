@@ -240,8 +240,10 @@ def sim_lightsheet_img(img, desc, dn, right_illum,
 
     # flipped, i.e. rot 180deg around y axis
     if flipped:
-        img = np.flip(img, (0,2))
-        dn = np.flip(dn, (0, 2))
+        img = np.flip(img, 0)
+        img = np.flip(img, 2)
+        dn = np.flip(dn, 0)
+        dn = np.flip(dn, 2)
     
     if right_illum:
         ls_pos = physical_dims[0] - ls_pos
