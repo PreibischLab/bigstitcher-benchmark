@@ -349,6 +349,10 @@ def load_params(def_path):
     if not 'two_views' in params:
         params['two_views'] = False
 
+    # default: dn proportional to signal, no specific template
+    if not 'dn_template_path' in params:
+        params['dn_template_path'] = None
+
     # wrap in Namespace for convenient dot-operator access
     res = Namespace()
     res.__dict__.update(params)
@@ -414,15 +418,17 @@ def sim_from_definition(def_path):
     params = load_params(def_path)
 
     img = load_tiff_sequence(params.raw_data_path, downsampling=None if params.downsampling <= 1 else params.downsampling)
-    
-    # LOG: loaded raw data
 
-    # downsample img
-    #if params.downsampling > 1:
-    #    img = simple_downsample(img, params.downsampling)
-        # LOG: downsampled
-
-    dn = dn_from_signal(img, params.ri_medium, params.ri_delta_range, params.clip_max_ri)
+    # get dn, either from signal or custom dn "template"
+    # (final dn will be proportional to signal or template, optionally clipped at clip_max_ri,
+    #  in the range of ri_delta_range * ri_medium)
+    if params.dn_template_path is not None:
+        dn_template = load_tiff_sequence(params.dn_template_path,
+                                         downsampling=None if params.downsampling <= 1 else params.downsampling)
+        dn = dn_from_signal(dn_template, params.ri_medium, params.ri_delta_range, params.clip_max_ri)
+        dn_template = None
+    else:
+        dn = dn_from_signal(img, params.ri_medium, params.ri_delta_range, params.clip_max_ri)
 
     # make descriptor img
     if params.grid_descs is not None:
