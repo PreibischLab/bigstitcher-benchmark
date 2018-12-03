@@ -19,6 +19,7 @@ import java.util.concurrent.Future;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 
+import bdv.util.ConstantRandomAccessible;
 import ij.IJ;
 import ij.ImageJ;
 import ij.ImagePlus;
@@ -40,21 +41,27 @@ import net.imglib2.view.Views;
 
 public class SimulateTissue
 {
-	private static class SimulationParameters
-	{
-		long seed = 42;
-		long[] max = new long[]{1024, 1024, 256};
-		long[] min = new long[]{0, 0, 0};
-		
-		double[] perlinScales = new double[] {1024/4,1025/1.5,256};
-		double perlinThresh = 0.15;
-		double backgroundDensity = 0.01;
 
+	private static class SphereParameters
+	{
 		int nBigSpheres = 200;
 		float minRadiusBig = 20;
 		float maxRadiusBig = 35;
 		float minValueBig = 1.2f;
 		float maxValueBig = 2.4f;
+	}
+
+	private static class SimulationParameters
+	{
+		long seed = 42;
+		long[] max = new long[]{1024, 1024, 256};
+		long[] min = new long[]{0, 0, 0};
+
+		double[] perlinScales = new double[] {1024/4,1025/1.5,256};
+		double perlinThresh = 0.15;
+		double backgroundDensity = 0.01;
+
+		SphereParameters[] bigSphereParameters = new SphereParameters[] {new SphereParameters() };
 
 		int nSmallSamples = 20000;
 		float minRadiusSmall = 2;
@@ -62,13 +69,13 @@ public class SimulateTissue
 		float minValueSmall = 4.0f;
 		float maxValueSmall = 6.0f;
 
-		boolean singleSpheroid = true;
-		long[] spheroidPos = new long[3];
-		double speroidRadius = 500.0;
+		boolean singleSpheroids = true;
+		long[][] spheroidPos = new long[1][3];
+		double[] speroidRadii = new double[] { 500.0 };
 
 		double[] transform = new AffineTransform3D().getRowPackedCopy();
 
-		public SimulationParameters(){}
+		String outDir = "sim-phantom";
 	}
 
 	public static void main(String[] args)
@@ -95,10 +102,10 @@ public class SimulateTissue
 		final SimulationParameters params = paramsT;
 
 		// create out directory
-		if (!Files.exists( Paths.get( args[0], "sim-phantom" )))
+		if (!Files.exists( Paths.get( args[0], params.outDir )))
 			try
 			{
-				Files.createDirectory( Paths.get( args[0], "sim-phantom" ));
+				Files.createDirectory( Paths.get( args[0], params.outDir ));
 			}
 			catch ( IOException e )
 			{
@@ -111,30 +118,47 @@ public class SimulateTissue
 		// general tissue shape: thresholded Perlin noise
 		RealRandomAccessible< FloatType > rrableTissue = new PerlinNoiseRealRandomAccessible<>( new FloatType(), params.perlinScales, new int[] {15, 15, 15}, 100, rnd );
 
-		if (params.singleSpheroid)
+		// for single Spheroids, collect individual densities for later sampling of "nuclei"
+		final List<RealRandomAccessible< FloatType >> spheroidsRRables = new ArrayList<>();
+		if (params.singleSpheroids)
 		{
-			rrableTissue = new HypersphereCollectionRealRandomAccessible<>( params.min.length, new FloatType() );
-			((HypersphereCollectionRealRandomAccessible<FloatType>) rrableTissue).addSphere( new Point( params.spheroidPos ), params.speroidRadius, new FloatType(1.0f) );
+			for (int i=0; i<params.spheroidPos.length; i++)
+			{
+				RealRandomAccessible< FloatType > spheroidRAble = new HypersphereCollectionRealRandomAccessible<>( params.min.length, new FloatType() );
+				((HypersphereCollectionRealRandomAccessible<FloatType>) spheroidRAble).addSphere(
+						new Point( params.spheroidPos[i] ), params.speroidRadii[i], new FloatType(1.0f) );
+				spheroidsRRables.add( spheroidRAble );
+			}
 		}
 
 		RealRandomAccessible< FloatType > rrableTissueThrd = new SimpleCalculatedRealRandomAccessible<FloatType>( new FloatType(), (a,b) -> {
 			a.setReal( b.iterator().next().get() > params.perlinThresh ? 1.0 : 0);
+			// single spheroids: 
+			if (params.singleSpheroids)
+				a.setReal( 0 );
 		}, rrableTissue);
 
 		// create big spherical objects within tissue
 		// these serve as density for sampling of smaller points
-		List< RealPoint > bigSpherePositions = PointRejectionSampling.sampleRealPoints( new FinalInterval( params.min, params.max ), params.nBigSpheres, rrableTissueThrd, rnd );
+		List< RealPoint > bigSpherePositions = new ArrayList<>();
+		for (int i=0; i<params.bigSphereParameters.length; i++)
+		{
+			RealRandomAccessible< FloatType > densRATmp = params.singleSpheroids ? spheroidsRRables.get( i ) : rrableTissueThrd;
+			bigSpherePositions.addAll( PointRejectionSampling.sampleRealPoints( new FinalInterval( params.min, params.max ), params.bigSphereParameters[i].nBigSpheres, densRATmp, rnd ));
+		}
 		List<Double> bigSphereRadii = new ArrayList<>();
 		HypersphereCollectionRealRandomAccessible< FloatType > rrableDensity = new HypersphereCollectionRealRandomAccessible<>( params.min.length, new FloatType() );
-		for (int i=0; i<params.nBigSpheres; i++)
-		{
-			double radius = params.minRadiusBig + rnd.nextDouble() * (params.maxRadiusBig - params.minRadiusBig);
-			rrableDensity.addSphere( 
-					bigSpherePositions.get( i ),
-					radius,
-					new FloatType(1.0f) );
-			bigSphereRadii.add( radius );
-		}
+		int c = 0;
+		for (int j=0; j<params.bigSphereParameters.length; j++)
+			for (int i=0; i<params.bigSphereParameters[j].nBigSpheres; i++)
+			{
+				double radius = params.bigSphereParameters[j].minRadiusBig + rnd.nextDouble() * (params.bigSphereParameters[j].maxRadiusBig - params.bigSphereParameters[j].minRadiusBig);
+				rrableDensity.addSphere( 
+						bigSpherePositions.get( c++ ),
+						radius,
+						new FloatType(1.0f) );
+				bigSphereRadii.add( radius );
+			}
 
 		// add some density to background -> smaller objects will no be exclusively within bigger objs
 		RealRandomAccessible< FloatType > rrableDensity2 = new SimpleCalculatedRealRandomAccessible<FloatType>( new FloatType(), (a,b) -> {
@@ -142,25 +166,33 @@ public class SimulateTissue
 		}, rrableDensity);
 
 		HypersphereCollectionRealRandomAccessible< FloatType > rrableBigPoints = new HypersphereCollectionRealRandomAccessible<>( params.min.length, new FloatType() );
-		HypersphereCollectionRealRandomAccessible< FloatType > rrableSmallPoints = new HypersphereCollectionRealRandomAccessible<>( params.min.length, new FloatType() );
+		RealRandomAccessible< FloatType > rrableSmallPoints = new HypersphereCollectionRealRandomAccessible<>( params.min.length, new FloatType() );
 		List< RealPoint > smallPoints = PointRejectionSampling.sampleRealPoints( new FinalInterval( params.min, params.max ), params.nSmallSamples, rrableDensity2, rnd );
 		// create separate rrables for big and small objects
 		// (separate for performance reasons: HypersphereCollectionRealRandomAccessible is fast for many small objects,
 		//  but not for many small and some big objects)
 		for (final RealPoint sp : smallPoints)
 		{
-			rrableSmallPoints.addSphere( 
+			((HypersphereCollectionRealRandomAccessible< FloatType >)rrableSmallPoints).addSphere( 
 					sp,
 					params.minRadiusSmall + rnd.nextDouble() * (params.maxRadiusSmall - params.minRadiusSmall),
 					new FloatType((float) ( params.minValueSmall + rnd.nextDouble() * (params.maxValueSmall - params.minValueSmall) )) );
 		}
-		for (int i=0; i<params.nBigSpheres; i++)
-		{
+
+		c = 0;
+		for (int j=0; j<params.bigSphereParameters.length; j++)
+			for (int i=0; i<params.bigSphereParameters[j].nBigSpheres; i++)
+			{
 			rrableBigPoints.addSphere( 
-					bigSpherePositions.get( i ),
-					bigSphereRadii.get( i ),
-					new FloatType((float) ( params.minValueBig + rnd.nextDouble() * (params.maxValueBig - params.minValueBig) )) );
-		}
+					bigSpherePositions.get( c ),
+					bigSphereRadii.get( c++ ),
+					new FloatType((float) ( params.bigSphereParameters[j].minValueBig + rnd.nextDouble() * (params.bigSphereParameters[j].maxValueBig - params.bigSphereParameters[j].minValueBig) )) );
+			}
+		
+		if (params.nSmallSamples < 1)
+			rrableSmallPoints = new SimpleCalculatedRealRandomAccessible<FloatType>( new FloatType(), (a,b) -> {
+				a.setReal( 0);
+			}, rrableBigPoints);
 
 		// final image: maximum of tissue img, big objects, small objects imgs
 		RealRandomAccessible< FloatType > rrableFinalUntransformed = new SimpleCalculatedRealRandomAccessible<FloatType>( new FloatType(), (a,b) -> {
@@ -220,7 +252,7 @@ public class SimulateTissue
 
 						RandomAccessibleInterval< FloatType > slice = Views.dropSingletonDimensions( out );
 						ImagePlus imp = ImageJFunctions.wrap(slice, "plane" + theZ);
-						IJ.saveAsTiff( imp, Paths.get( args[0], "sim-phantom", "sim"+theZ+".tif" ).toString() );
+						IJ.saveAsTiff( imp, Paths.get( args[0], params.outDir, "sim"+theZ+".tif" ).toString() );
 
 						System.out.println( "saved plane " + (theZ+1) + " (of " + (params.max[2] - params.min[2] + 1) + " planes)." );
 						return null;
